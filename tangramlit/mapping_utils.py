@@ -265,7 +265,6 @@ def map_cells_to_space(
     data = MyDataModule(adata_sc=adata_sc,
                         adata_st=adata_st,
                         input_genes=input_genes,
-                        refined_mode=mode == "refined",
                         train_genes_names=train_genes_names,
                         val_genes_names=val_genes_names,
                         )

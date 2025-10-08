@@ -17,7 +17,7 @@ lambda_neighborhood_g1: 0
 lambda_r: 0
 lambda_sparsity_g1: 0
 learning_rate: 0.1
-mode: filter
+filter: True
 num_epochs: 200
 random_state: 123
 target_count: 100

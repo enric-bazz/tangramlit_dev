@@ -12,3 +12,6 @@ myvenv
 
 # TensorBoard logs
 tb_logs
+
+# Data folder
+data

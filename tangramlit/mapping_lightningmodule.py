@@ -1,5 +1,6 @@
 import random
 import numpy as np
+import sklearn
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
@@ -9,6 +10,7 @@ from pytorch_lightning.callbacks import ProgressBar
 from tqdm import tqdm
 
 from . import validation_metrics as vm
+from . import utils as ut
 
 """
 Lightning module for Tangram
@@ -150,8 +152,22 @@ class MapperLightning(pl.LightningModule):
             # Define uniform density prior
             self.d_prior = torch.ones(n_spots) / n_spots
 
+            # Compute spatial weights and register as buffers
+            voxel_weights, neighborhood_filter, ct_encode, spatial_weights = None, None, None, None
+            if self.hparams.lambda_neighborhood_g1 > 0:
+                voxel_weights = self._compute_spatial_weights(G, standardized=True, self_inclusion=True)
+            if self.hparamslambda_ct_islands > 0:
+                neighborhood_filter = self._compute_spatial_weights(G, standardized=False, self_inclusion=False)
+                ct_encode = ut.one_hot_encoding(S.obs[self.hparams.cluster_label]).values
+            if self.hparams.lambda_moran > 0 or self.hparams.lambda_geary > 0:
+                spatial_weights = self._compute_spatial_weights(G, standardized=True, self_inclusion=False)
+            if self.hparams.lambda_getis_ord > 0:
+                spatial_weights = self._compute_spatial_weights(G, standardized=False, self_inclusion=True)
+
+            # NOTE: spatial_weights is overwritten when both G* and I/C are required
+
       
-            # Set to tensors: spatial weights for neighborhood weighting, LISA weights, cell type islands
+            # Register as buffers
             for attr in ["voxel_weights", "neighborhood_filter", "spatial_weights", "ct_encode"]:
                 val = getattr(self.hparams, attr)
                 if val is not None:
@@ -160,6 +176,29 @@ class MapperLightning(pl.LightningModule):
             self.getis_ord_G_star_ref, self.moran_I_ref, self.gearys_C_ref = self._spatial_local_indicators(G)
 
 
+    def _compute_spatial_weights(self, batch, standardized, self_inclusion):
+        """
+            Compute spatial weights matrix.
+            Contains either row-standardized distances or binary adjacencies. Can include self or not (1 or 0 diagonal).
+        """
+        if standardized:
+            connectivities = batch.obsp['spatial_connectivities'].copy()
+            distances = batch.obsp['spatial_distances'].copy()
+
+            # Row-normalize distances
+            distances_norm = sklearn.preprocessing.normalize(distances, norm="l1", axis=1, copy=False)
+
+            # Mask normalized distances with connectivity (keep only neighbor links)
+            weighted_adj = connectivities.multiply(distances_norm)
+
+            # Make dense
+            spatial_weights = weighted_adj.todense()
+        else:
+            spatial_weights = batch.obsp['spatial_connectivities'].todense()
+        if self_inclusion:
+            spatial_weights += np.eye(spatial_weights.shape[0])
+
+        return spatial_weights
 
     def _spatial_local_indicators(self, G):
         """
@@ -191,6 +230,8 @@ class MapperLightning(pl.LightningModule):
             gearys_C = weighted_diff_sq.sum(dim=(0, 1)) / (2 * m2)
 
         return getis_ord_G_star, moran_I, gearys_C
+    
+    # TODO: refact. spatial weights
 
 
     def forward(self):
@@ -330,7 +371,7 @@ class MapperLightning(pl.LightningModule):
         # Filter terms
         if self.hparams.filter:
             filter_terms = {
-                "count_reg": count_term if self.hparams.lambda_count > 0 else Non<e,
+                "count_reg": count_term if self.hparams.lambda_count > 0 else None,
                 "lambda_f_reg": f_reg if self.hparams.lambda_f_reg > 0 else None,
             }
             step_output.update(filter_terms)

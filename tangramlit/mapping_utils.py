@@ -57,31 +57,18 @@ def validate_mapping_inputs(
     """
 
     # Check invalid values for arguments
-    if lambda_g1 + lambda_sparsity_g1 == 0:  # either of the two must be non-zero
+    if lambda_g1 > 0:
         raise ValueError("lambda_g1 cannot be 0.")
 
     # Validate anndata objects
     if not isinstance(adata_sc, AnnData) or not isinstance(adata_st, AnnData):
         raise ValueError("Both adata_sc and adata_st must be AnnData objects.")
 
-    # Check for gene name compatibility: set everything to lowercase (only useful for testing purposes to detected data or names mismatches)
+    # Extract common genes names
     sc_genes = set(adata_sc.var_names.str.lower())
     st_genes = set(adata_st.var_names.str.lower())
     common_genes = sc_genes.intersection(st_genes)
     
-    """if len(common_genes) == 0:
-        raise ValueError("No common genes found between single-cell and spatial data!")
-    
-    logging.info(f"Found {len(common_genes)} common genes between datasets")
-    
-    # If very few genes overlap, it might indicate a naming issue
-    if len(common_genes) < min(len(sc_genes), len(st_genes)) * 0.1:  # less than 10% overlap
-        logging.warning(
-            f"Very few common genes found! "
-            f"SC genes: {len(sc_genes)}, ST genes: {len(st_genes)}, "
-            f"Common: {len(common_genes)}. Check gene naming conventions."
-        )"""
-
     # Check that input_genes is a subset of overlapping genes
     if input_genes is not None:
         if not set(input_genes).issubset(common_genes):

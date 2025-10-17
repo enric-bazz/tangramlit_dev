@@ -14,4 +14,4 @@ myvenv
 tb_logs
 
 # Data folder
-data
+data/

@@ -7,7 +7,7 @@ import yaml
 def data_loading(path):
     # Load cropped datasets
     adata_sc = ad.read_h5ad(path + "/test_sc_crop.h5ad")
-    adata_st = ad.read_h5ad(path + "/slice200_norm_reduced.h5ad")
+    adata_st = ad.read_h5ad(path + "/slice200_norm_with_spatial.h5ad")
 
     return (adata_sc, adata_st)
 
@@ -118,7 +118,7 @@ def cv_mapper_genes(data, config, genes_list):
 
 def main():
 
-    path = "C:/Users/enric/tangram/myDataCropped"
+    path = "/nfsd/sysbiobig/bazzaccoen/tangramlit_dev/data"
 
     data = data_loading(path)
 

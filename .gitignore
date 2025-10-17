@@ -9,12 +9,16 @@ wheels/
 # Virtual environments
 .venv
 myvenv
-
-# TensorBoard logs
-tb_logs
+.venv/
+myvenv/
 
 # Data folder
 data/
 
 # VScode cofing
 .vscode
+.vscode/
+
+# TensorBoard logs
+tb_logs
+tb_logs/

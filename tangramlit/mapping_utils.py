@@ -19,7 +19,7 @@ def validate_mapping_inputs(
         input_genes,
         train_genes_names,
         val_genes_names,
-        mode,
+        filter,
         learning_rate=0.1,
         num_epochs=1000,
         random_state=None,
@@ -48,7 +48,7 @@ def validate_mapping_inputs(
 
     Returns:
         hyperparameters (dict): Dictionary of hyperparameters for the LightningModule training.
-        Includes: mode, num_epochs, learning_rate, random_state, all lambdas, targe_count, cluster_label.
+        Includes: filter, num_epochs, learning_rate, random_state, all lambdas, targe_count, cluster_label.
         Weights for refinement terms are added in map_cells_to_space().
         The anndata objects and gene indexes are only validated (not returned in the output dict).
 
@@ -57,37 +57,18 @@ def validate_mapping_inputs(
     """
 
     # Check invalid values for arguments
-    if lambda_g1 + lambda_sparsity_g1 == 0:  # either of the two must be non-zero
+    if not lambda_g1 > 0:
         raise ValueError("lambda_g1 cannot be 0.")
 
     # Validate anndata objects
     if not isinstance(adata_sc, AnnData) or not isinstance(adata_st, AnnData):
         raise ValueError("Both adata_sc and adata_st must be AnnData objects.")
 
-    # Validate counts objects --> implemented in Dataset class, lightning_datamodule.py
-
-    # Validate mapping mode
-    if mode not in ["vanilla", "filter", "refined"]:
-        raise ValueError('Argument "mode" must be "vanilla", "filter" or "refined".')
-
-    # Check for gene name compatibility: set everything to lowercase (only useful for testing purposes to detected data or names mismatches)
+    # Extract common genes names
     sc_genes = set(adata_sc.var_names.str.lower())
     st_genes = set(adata_st.var_names.str.lower())
     common_genes = sc_genes.intersection(st_genes)
     
-    """if len(common_genes) == 0:
-        raise ValueError("No common genes found between single-cell and spatial data!")
-    
-    logging.info(f"Found {len(common_genes)} common genes between datasets")
-    
-    # If very few genes overlap, it might indicate a naming issue
-    if len(common_genes) < min(len(sc_genes), len(st_genes)) * 0.1:  # less than 10% overlap
-        logging.warning(
-            f"Very few common genes found! "
-            f"SC genes: {len(sc_genes)}, ST genes: {len(st_genes)}, "
-            f"Common: {len(common_genes)}. Check gene naming conventions."
-        )"""
-
     # Check that input_genes is a subset of overlapping genes
     if input_genes is not None:
         if not set(input_genes).issubset(common_genes):
@@ -100,7 +81,6 @@ def validate_mapping_inputs(
         elif set(train_genes_names).intersection(set(val_genes_names)):
             raise ValueError("train_genes_names and val_genes_names must not intersect.")
 
-
     # Validate training numerical parameters
     if num_epochs <= 0:
         raise ValueError("num_epochs must be positive")
@@ -111,83 +91,69 @@ def validate_mapping_inputs(
     ):
         raise ValueError("random_state must be an int, None, or a random number generator")
 
-    # Filter mode inputs
-    if mode == "filter":
+    # Filter inputs
+    if filter:
         if not all([lambda_f_reg, lambda_count]):
             raise ValueError(
-                "lambda_f_reg and lambda_count must be specified if mode is 'filter'."
+                "lambda_f_reg and lambda_count must be specified if cell filter is active."
             )
         if not target_count:
             target_count = adata_st.shape[0]
             logging.info(f"target_count missing from input is set to adata_st.shape[0] = {target_count}")
 
     # CT islands enforcement
-    if mode == "refined" and lambda_ct_islands > 0:
+    if lambda_ct_islands > 0:
         if cluster_label is None or cluster_label not in adata_sc.obs.keys():
             raise ValueError(
-                "cluster_label must be specified for the cell type island extension (mode is 'refined' and lambda_ct_islands > 0)."
+                "cluster_label must be specified for the cell type island loss term."
             )
 
-    # Check spatial coordinates for refined mode
-    if mode == "refined":
-        if 'spatial' not in adata_st.obsm.keys():
-            raise ValueError("Refined mode requirement: 'spatial' key is missing in adata_st.obsm.")
+    # Check spatial coordinates
+    if 'spatial' not in adata_st.obsm.keys():
+        raise ValueError("'spatial' key is missing in adata_st.obsm.")
         
-        # Check for NaN values in spatial coordinates (squidpy graph does not work otherwise)
-        if np.any(np.isnan(adata_st.obsm['spatial'])):
-            # Get indices of rows without NaN values
-            valid_spots = ~np.any(np.isnan(adata_st.obsm['spatial']), axis=1)
-            n_invalid = np.sum(~valid_spots)
-            
-            logging.warning(f"Found {n_invalid} spots in adata_st with NaN coordinates. These spots will be removed.")
-            
-            # Remove spots with NaN coordinates
-            adata_st._inplace_subset_obs(valid_spots)
-
-    # NOTE: Training genes preprocessing and the uniform density prior are handled internally in the LightningDataModule
+    # Check for NaN values in spatial coordinates (squidpy graph does not work otherwise)
+    if np.any(np.isnan(adata_st.obsm['spatial'])):
+        # Get indices of rows without NaN values
+        valid_spots = ~np.any(np.isnan(adata_st.obsm['spatial']), axis=1)
+        n_invalid = np.sum(~valid_spots)
+        
+        logging.warning(f"Found {n_invalid} spots in adata_st with NaN coordinates. These spots will be removed.")
+        
+        # Remove spots with NaN coordinates
+        adata_st._inplace_subset_obs(valid_spots)
 
     # Create hyperparameters dictionary for all next calls
     hyperparameters = {}
-    # Add mode
-    hyperparameters['mode'] = mode
-    # NOTE: The filter mode requires training on a new parameters set (the filter weights F) that
-    # must be defined separately in the mapper. The refined mode, on the other hand, adds loss terms that only affect
-    # the original parameters set (the mapping matrix M).
-
-    # Add learning rate and n_epochs
-    hyperparameters['learning_rate'] = learning_rate
-    hyperparameters['num_epochs'] = num_epochs
-    # Add RNG seed
-    hyperparameters['random_state'] = random_state
+    hyperparameters['filter'] = filter  # filter
+    hyperparameters['learning_rate'] = learning_rate  # learning rate
+    hyperparameters['num_epochs'] = num_epochs  # number of epochs
+    hyperparameters['random_state'] = random_state  # RNG seed
 
     # Loss
-    vanilla_terms = {
+    loss_coeffs = {
         "lambda_d": lambda_d,  # KL (ie density) term
         "lambda_g1": lambda_g1,  # gene-voxel cos sim
         "lambda_g2": lambda_g2,  # voxel-gene cos sim
         "lambda_r": lambda_r,  # regularizer: penalize entropy
         "lambda_l1": lambda_l1,  # l1 regularizer
         "lambda_l2": lambda_l2,  # l2 regularizer
+        "lambda_sparsity_g1": lambda_sparsity_g1,  # sparsity wighted term
+        "lambda_neighborhood_g1": lambda_neighborhood_g1,  # neighborhood weighted term
+        "lambda_getis_ord": lambda_getis_ord,  # Getis-Ord G* weighting
+        "lambda_moran": lambda_moran,  # Moran's I weighting
+        "lambda_geary": lambda_geary,  # Geary's C weighting
+        "lambda_ct_islands": lambda_ct_islands,  # ct islands enforcement
+        "cluster_label": cluster_label,  # labels column
     }
-    hyperparameters.update(vanilla_terms)
-    if mode == "filter":
+    hyperparameters.update(loss_coeffs)
+    if filter:
         filter_terms = {
             "lambda_count": lambda_count,  # regularizer: enforce target number of cells
             "lambda_f_reg": lambda_f_reg,  # regularizer: push sigmoid values to 0,1
             "target_count": target_count,  # target number of cells
         }
         hyperparameters.update(filter_terms)
-    elif mode == "refined":
-        refined_terms = {
-            "lambda_sparsity_g1": lambda_sparsity_g1,  # sparsity wighted term
-            "lambda_neighborhood_g1": lambda_neighborhood_g1,  # neighborhood weighted term
-            "lambda_getis_ord": lambda_getis_ord,  # Getis-Ord G* weighting
-            "lambda_moran": lambda_moran,  # Moran's I weighting
-            "lambda_geary": lambda_geary,  # Geary's C weighting
-            "lambda_ct_islands": lambda_ct_islands,  # ct islands enforcement
-            "cluster_label": cluster_label,  # labels column
-        }
-        hyperparameters.update(refined_terms)
 
     return hyperparameters
 
@@ -198,7 +164,7 @@ def map_cells_to_space(
         input_genes=None,
         train_genes_names=None,
         val_genes_names=None,
-        mode="vanilla",
+        filter=False,
         learning_rate=0.1,
         num_epochs=1000,
         random_state=None,
@@ -228,7 +194,7 @@ def map_cells_to_space(
         input_genes (list): Optional. Training gene list. Must be a subset of the genes shared between modalities.
         train_genes_names (list): Optional. Gene indices used for training from the training gene list. Must be a subset of the genes shared between modalities.
         val_genes_names (list): Optional. Gene indices used for validation from the training gene list. Must be a subset of single cell data genes, possibly not in the spatial data.
-        mode (str): Optional. Tangram mapping mode. Currently supported: 'vanilla', 'filter', 'refined'. Default is 'vanilla'.
+        filter (bool): Whether the cell filter is active or not. Default is False.
         learning_rate (float): Optional. Learning rate for the optimizer. Default is 0.1.
         num_epochs (int): Optional. Number of epochs. Default is 1000.
         random_state (int): Optional. pass an int to reproduce training. Default is None.
@@ -238,22 +204,22 @@ def map_cells_to_space(
         lambda_r (float): Optional. Strength of entropy regularizer. An higher entropy promotes probabilities of each cell peaked over a narrow portion of space. lambda_r = 0 corresponds to no entropy regularizer. Default is 0.
         lambda_l1 (float): Optional. Strength of L1 regularizer. Default is 0.
         lambda_l2 (float): Optional. Strength of L2 regularizer. Default is 0.
-        lambda_count (float): Optional. Regularizer for the count term. Default is 1. Only valid when mode == 'constrained'
-        lambda_f_reg (float): Optional. Regularizer for the filter, which promotes Boolean values (0s and 1s) in the filter. Only valid when mode == 'constrained'. Default is 1.
-        target_count (int): Optional. The number of cells to be filtered. Default is None (internally set to adata_st.shape[0]). Only valid when mode == 'constrained'.
-        lambda_sparsity_g1 (float): Optional. Strength of sparsity weighted gene expression comparison. Default is 0. Only valid when mode == 'refined'.
-        lambda_neighborhood_g1 (float): Optional. Strength of neighborhood weighted gene expression comparison. Default is 0. Only valid when mode == 'refined'.
-        lambda_getis_ord (float): Optional. Strength of Getis-Ord G* preservation. Default is 0. Only valid when mode == 'refined'.
-        lambda_geary (float): Optional. Strength of Geary's C preservation. Default is 0. Only valid when mode == 'refined'.
-        lambda_moran (float): Optional. Strength of Moran's I preservation. Default is 0. Only valid when mode == 'refined'.
-        lambda_ct_islands (float): Optional. Strength of ct islands enforcement. Default is 0. Only valid when mode == 'refined'.
-        cluster_label (str): Optional. Field in `adata_sc.obs` used for aggregating single cell data. Only valid for `mode=refined` and lambda_ct-islands > 0. Default is None.
+        lambda_count (float): Optional. Regularizer for the count term. Default is 1. Only valid when 'filter' is True.
+        lambda_f_reg (float): Optional. Regularizer for the filter, which promotes Boolean values (0s and 1s) in the filter. Only valid when 'filter' is True. Default is 1.
+        target_count (int): Optional. The number of cells to be filtered. Default is None (internally set to adata_st.shape[0]). Only valid when 'filter' is True'.
+        lambda_sparsity_g1 (float): Optional. Strength of sparsity weighted gene expression comparison. Default is 0.
+        lambda_neighborhood_g1 (float): Optional. Strength of neighborhood weighted gene expression comparison. Default is 0.
+        lambda_getis_ord (float): Optional. Strength of Getis-Ord G* preservation. Default is 0.
+        lambda_geary (float): Optional. Strength of Geary's C preservation. Default is 0.
+        lambda_moran (float): Optional. Strength of Moran's I preservation. Default is 0.
+        lambda_ct_islands (float): Optional. Strength of ct islands enforcement. Default is 0. 
+        cluster_label (str): Optional. Field in `adata_sc.obs` used for aggregating single cell data. Only valid for lambda_ct-islands > 0. Default is None.
 
     Returns:
         A cell-by-spot AnnData containing the probability of mapping cell i on spot j.
         The `uns` field of the returned AnnData contains the training genes.
         The loss terms history is stored in adata_map.uns['training_history'].
-        If mode == 'filter', the `uns` field also contains the filter values and the number of selected cells during each epoch.
+        If 'filter' is True, the `uns` field also contains the filter values and the number of selected cells during each epoch.
         The final filter values are stored in adata_map.obs['F_out'].
         The final LightningModule and LightningDataModule objects are also returned.
     """
@@ -261,44 +227,16 @@ def map_cells_to_space(
     # Input control function
     hyperparameters = validate_mapping_inputs(**{k: v for k, v in locals().items() if k in validate_mapping_inputs.__code__.co_varnames})  # pass all args
 
-    # Call the data module to retrieve batch size
+    # Initialize the model
+    model = MapperLightning(**hyperparameters)
+
+    # Initialize DataModule
     data = MyDataModule(adata_sc=adata_sc,
                         adata_st=adata_st,
                         input_genes=input_genes,
-                        refined_mode=mode == "refined",
                         train_genes_names=train_genes_names,
                         val_genes_names=val_genes_names,
                         )
-    # NOTE: Need to create the datamodule instance before computing spatial weights, for which the spatial neighborhood graph is required
-
-    # Compute spatial weights for refined mode
-    if mode == "refined":
-        # Init all to None (all passed to mapper)
-        voxel_weights, neighborhood_filter, ct_encode, spatial_weights = None, None, None, None
-        if lambda_neighborhood_g1 > 0:
-            voxel_weights = compute_spatial_weights(adata_st, standardized=True, self_inclusion=True)
-        if lambda_ct_islands > 0:
-            neighborhood_filter = compute_spatial_weights(adata_st, standardized=False, self_inclusion=False)
-            ct_encode = ut.one_hot_encoding(adata_sc.obs[cluster_label]).values
-        if lambda_moran > 0 or lambda_geary > 0:
-            spatial_weights = compute_spatial_weights(adata_st, standardized=True, self_inclusion=False)
-        if lambda_getis_ord > 0:
-            spatial_weights = compute_spatial_weights(adata_st, standardized=False, self_inclusion=True)
-
-        # Add to hyperparameters dictionary
-        hyperparameters['spatial_weights'] = spatial_weights
-        hyperparameters['neighborhood_filter'] = neighborhood_filter
-        hyperparameters['ct_encode'] = ct_encode
-        hyperparameters['voxel_weights'] = voxel_weights
-
-    # NOTE: This step is implemented here as it requires both the refined lambda values and the anndata objects.
-    # It is possible to implement it in the LightningDataModule, but it would require passing the lambda values
-    # to the LightningDataModule and then to the LightningModule. This would require modifying the LightningDataModule
-    # to accept lambda values as input.
-    # The same goes for the PytorchLightningModule that would, instead, require the anndata objects as inputs.
-
-    # Initialize the model
-    model = MapperLightning(**hyperparameters)
 
     # Customize ModelCheckpoint callback to avoid memory blow-up
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
@@ -313,9 +251,9 @@ def map_cells_to_space(
     # Set early stopper
     early_stop = EarlyStopping(
         monitor="main_loss",  # monitor training score
-        min_delta=0.001,  # score delta
-        patience=5,
-        verbose=True,
+        min_delta=0.001,  # score minimum improvement
+        patience=10,
+        verbose=False,
         mode="max",
         check_on_train_epoch_end=True,
     )
@@ -342,7 +280,7 @@ def map_cells_to_space(
 
     # Get the final mapping matrix
     with torch.no_grad():
-        if model.hparams.mode == 'filter':
+        if model.hparams.filter:
             mapping, _, filter_probs = model()  # Unpack values (skip filtered M matrix)
             final_mapping = mapping.cpu().numpy()  # Turn into numpy array
             final_filter = filter_probs.cpu().numpy()  # Turn into numpy array
@@ -363,7 +301,7 @@ def map_cells_to_space(
     # Store training genes in adata_map.uns['training_genes']
     adata_map.uns['training_genes'] = training_genes
     # Store final filter values in adata_map.obs['F_out']
-    if mode == "filter":
+    if filter:
         adata_map.obs["F_out"] = final_filter
     # Create training history dictionary
     training_history = {
@@ -373,10 +311,16 @@ def map_cells_to_space(
         'kl_reg': model.loss_history['kl_reg'],
         'entropy_reg': model.loss_history['entropy_reg'],
         'l1_term': model.loss_history['l1_term'],
-        'l2_term': model.loss_history['l2_term']
+        'l2_term': model.loss_history['l2_term'],
+        'sparsity_term': model.loss_history['sparsity_term'],
+        'neighborhood_term': model.loss_history['neighborhood_term'],
+        'getis_ord_term': model.loss_history['getis_ord_term'],
+        'moran_term': model.loss_history['moran_term'],
+        'geary_term': model.loss_history['geary_term'],
+        'ct_island_term': model.loss_history['ct_island_term'],
     }
-    # Add filter terms only if filter mode was used
-    if model.hparams.mode == 'filter':
+    # Add filter terms only if filter was used
+    if model.hparams.filter:
         filter_terms = {
             'count_reg': model.loss_history['count_reg'],
             'lambda_f_reg': model.loss_history['lambda_f_reg']
@@ -387,48 +331,10 @@ def map_cells_to_space(
             'filter_values': model.filter_history['filter_values'],
             'n_cells': model.filter_history['n_cells']
         }
-    # Add refined mode terms if they were used (check lambdas > 0)
-    if mode == "refined":
-        if hyperparameters['lambda_sparsity_g1'] > 0:
-            training_history['sparsity_term'] = model.loss_history['sparsity_term']
-        if hyperparameters['lambda_neighborhood_g1'] > 0:
-            training_history['neighborhood_term'] = model.loss_history['neighborhood_term']
-        if hyperparameters['lambda_ct_islands'] > 0:
-            training_history['ct_island_term'] = model.loss_history['ct_island_term']
-        if hyperparameters['lambda_getis_ord'] > 0:
-            training_history['getis_ord_term'] = model.loss_history['getis_ord_term']
-        if hyperparameters['lambda_moran'] > 0:
-            training_history['moran_term'] = model.loss_history['moran_term']
-        if hyperparameters['lambda_geary'] > 0:
-            training_history['geary_term'] = model.loss_history['geary_term']
     # Store training history in adata_map.uns['training_history']
     adata_map.uns['training_history'] = training_history
 
     return adata_map, model, data
-
-
-def compute_spatial_weights(adata_st, standardized, self_inclusion):
-    """
-        Compute spatial weights matrix.
-    """
-    if standardized:
-        connectivities = adata_st.obsp['spatial_connectivities'].copy()
-        distances = adata_st.obsp['spatial_distances'].copy()
-
-        # Row-normalize distances
-        distances_norm = sklearn.preprocessing.normalize(distances, norm="l1", axis=1, copy=False)
-
-        # Mask normalized distances with connectivity (so only keep neighbor links)
-        weighted_adj = connectivities.multiply(distances_norm)
-
-        # Make dense
-        spatial_weights = weighted_adj.todense()
-    else:  # binary
-        spatial_weights = adata_st.obsp['spatial_connectivities'].todense()
-    if self_inclusion:
-        spatial_weights += np.eye(spatial_weights.shape[0])
-
-    return spatial_weights
 
 def project_sc_genes_onto_space(adata_map, datamodule):
     """
@@ -569,7 +475,7 @@ def get_cv_data(genes_list, k=10):
 def cross_validate_mapping(
         adata_sc,
         adata_st,
-        mode="vanilla",
+        filter=False,
         learning_rate=0.1,
         num_epochs=1000,
         k=10,
@@ -599,7 +505,7 @@ def cross_validate_mapping(
     Args:
         adata_sc (AnnData): single cell data
         adata_st(AnnData): gene spatial data
-        mode (str): Optional. Tangram mapping mode. Currently supported: 'vanilla', 'filter', 'refined'. Default is 'vanilla'.
+        filter (bool): Whether cell filtering is active or not.
         learning_rate (float): Optional. Learning rate for the optimizer. Default is 0.1.
         num_epochs (int): Optional. Number of epochs. Default is 1000.
         k (int): Number of folds for k-folds cross-validation. Default is 10.
@@ -608,16 +514,16 @@ def cross_validate_mapping(
         lambda_g1 (float): Optional. Strength of Tangram loss function. Default is 1.
         lambda_g2 (float): Optional. Strength of voxel-gene regularizer. Default is 0.
         lambda_r (float): Optional. Strength of entropy regularizer. Default is 0.
-        lambda_count (float): Optional. Regularizer for the count term. Default is 1. Only valid when mode == 'constrained'
-        lambda_f_reg (float): Optional. Regularizer for the filter, which promotes Boolean values (0s and 1s) in the filter. Only valid when mode == 'constrained'. Default is 1.
+        lambda_count (float): Optional. Regularizer for the count term. Default is 1. Only valid when filter is True.
+        lambda_f_reg (float): Optional. Regularizer for the filter, which promotes Boolean values (0s and 1s) in the filter. Only valid when filter is True. Default is 1.
         target_count (int): Optional. The number of cells to be filtered. Default is None.
-        lambda_sparsity_g1 (float): Optional. Strength of sparsity regularizer. Default is 0. Only valid when mode == 'refined'.
-        lambda_neighborhood_g1 (float): Optional. Strength of neighborhood regularizer. Default is 0. Only valid when mode == 'refined'.
-        lambda_getis_ord (float): Optional. Strength of Getis-Ord regularizer. Default is 0. Only valid when mode == 'refined'.
-        lambda_moran (float): Optional. Strength of Moran regularizer. Default is 0. Only valid when mode == 'refined'.
-        lambda_geary (float): Optional. Strength of Geary regularizer. Default is 0. Only valid when mode == 'refined'.
-        lambda_ct_islands (float): Optional. Strength of ct islands enforcement. Default is 0. Only valid when mode == 'refined'.
-        cluster_label (str): Optional. Field in `adata_sc.obs` used for aggregating single cell data. Only valid for `mode=refined` and lambda_ct-islands > 0. Default is None.
+        lambda_sparsity_g1 (float): Optional. Strength of sparsity regularizer. Default is 0.
+        lambda_neighborhood_g1 (float): Optional. Strength of neighborhood regularizer. Default is 0.
+        lambda_getis_ord (float): Optional. Strength of Getis-Ord regularizer. Default is 0.
+        lambda_moran (float): Optional. Strength of Moran regularizer. Default is 0.
+        lambda_geary (float): Optional. Strength of Geary regularizer. Default is 0.
+        lambda_ct_islands (float): Optional. Strength of ct islands enforcement. Default is 0.
+        cluster_label (str): Optional. Field in `adata_sc.obs` used for aggregating single cell data. Only valid for lambda_ct-islands > 0. Default is None.
         random_state (int): Optional. pass an int to reproduce training. Default is None.
 
     Returns:
@@ -646,7 +552,7 @@ def cross_validate_mapping(
             input_genes=input_genes,  # input genes list
             train_genes_names=train_genes,  # training genes of current fold
             val_genes_names=test_genes,  # validation genes of current fold
-            mode=mode,
+            filter=False,
             learning_rate=learning_rate,
             num_epochs=num_epochs,
             lambda_d=lambda_d,
@@ -700,7 +606,7 @@ def run_multiple_mappings(
     ):
     """
     Runs multiple mappings using the same configuration and returns the final alignments cube.
-    If in filter mode the final filters matrix is also returned.
+    If filter is active the final filters matrix is also returned.
     Args are added to control what tensors are stored for each run: storing n_runs mapping matrices might be memory-intensive.
 
     Args:
@@ -724,7 +630,6 @@ def run_multiple_mappings(
     datamodule = MyDataModule(adata_sc=adata_sc,
                         adata_st=adata_st,
                         #input_genes=input_genes,
-                        #refined_mode=mode == "refined",
                         #train_genes_names=train_genes_names,
                         #val_genes_names=val_genes_names,
                         )
@@ -777,7 +682,7 @@ def run_multiple_mappings(
 
         # Get the final mapping matrix
         with torch.no_grad():
-            if model.hparams.mode == 'filter':
+            if model.hparams.filter:
                 mapping, filtered_mapping, filter_probs = model()  # Unpack values (skip filtered M matrix)
                 final_mapping = mapping.cpu().numpy()
                 final_filtered_mapping = filtered_mapping.cpu().numpy()

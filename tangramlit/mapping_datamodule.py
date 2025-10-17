@@ -1,5 +1,4 @@
 import logging
-
 import numpy as np
 import scanpy as sc
 import squidpy as sq
@@ -20,7 +19,6 @@ class MyDataModule(LightningDataModule):
                  adata_sc=None,
                  adata_st=None,
                  input_genes=None,
-                 refined_mode=False,
                  train_genes_names=None,
                  val_genes_names=None
                  ):
@@ -31,7 +29,6 @@ class MyDataModule(LightningDataModule):
             adata_sc (AnnData): Single-cell AnnData object.
             adata_st (AnnData): Spatial AnnData object.
             input_genes (list): List of input genes to use for training. If None, use all genes shared between adata_sc and adata_st.
-            refined_mode (bool): Whether to use refined mode for training. If True, use refined mode. If False, use unrefined mode. Default is False.
             train_genes_names (list): List of names of genes to use for training. If None, use all genes shared between adata_sc and adata_st.
             val_genes_names (list): List of names of genes to use for validation.
         """
@@ -39,7 +36,6 @@ class MyDataModule(LightningDataModule):
         self.adata_sc = adata_sc
         self.adata_st = adata_st
         self.input_genes = input_genes  # Allow passing specific genes for training
-        self.refined_mode = refined_mode  # Flag to require spatial coordinates for refined mode
         self.train_genes_names = train_genes_names
         self.val_genes_names = val_genes_names
 
@@ -52,9 +48,9 @@ class MyDataModule(LightningDataModule):
             self.val_genes_names = [g.lower() for g in self.val_genes_names]
 
         # Compute spatial neighbors needed for the neighborhood extension of Tangram
-        if self.refined_mode and 'spatial_connectivities' not in adata_st.obsp.keys():
+        if ('spatial_connectivities' 'spatial_distances') not in adata_st.obsp.keys():
             sq.gr.spatial_neighbors(self.adata_st, set_diag=False, key_added="spatial")
-        # If not in refined mode, spatial coordinates are not required in the input anndata
+
 
     def prepare_data(self):
         """
@@ -83,7 +79,7 @@ class MyDataModule(LightningDataModule):
         self.adata_st.uns['overlap_genes'] = list(overlap_genes)
 
         # 5. Filter all-zero-valued genes and get filtered overlap (candidate training genes)
-        # sc.pp.filter_genes() returns tuple containing: (a boolean array indicating which genes were filtered out, the number of cells per gene)
+        # scanpy.pp.filter_genes() returns tuple containing: (a boolean array indicating which genes were filtered out, the number of cells per gene)
         filtered_genes_sc, _ = sc.pp.filter_genes(self.adata_sc, min_cells=1, inplace=False)  # skip n_cells
         filtered_genes_st, _ = sc.pp.filter_genes(self.adata_st, min_cells=1, inplace=False)  # skip n_cells
         # Get gene names by masking the adata with boolean arrays
@@ -105,7 +101,6 @@ class MyDataModule(LightningDataModule):
         self.adata_sc.var["is_training"] = self.adata_sc.var.index.isin(training_genes)
         self.adata_st.var["is_training"] = self.adata_st.var.index.isin(training_genes)
 
-        # TODO ON BLADE ENV: integrate all gene annotation procedures tried in the training genes notebook
 
     def setup(self, stage: str):
         """
@@ -195,15 +190,19 @@ class AdataPairDataset(Dataset):
             logging.error(f"Spatial AnnData X has unrecognized type: {X_type}")
             raise NotImplementedError
 
+        # Spatial Graph (both objects returned by squidpy.gr.spatial_neighbors() are of type csr_matrix)
+        self.spatial_graph_conn = torch.tensor(adata_st.obsp['spatial_connectivities'].toarray(), dtype=torch.float32)  # connectivities
+        self.spatial_graph_dist = torch.tensor(adata_st.obsp['spatial_distances'].toarray(), dtype=torch.float32)  # distances
+
         # Get train/val genes indexes from names
         self.genes_idx = gene_names_to_indices(gene_names=genes_names, adata=adata_st) if genes_names is not None else slice(None)
         # NOTE: When indices are `None`, it defaults to using all genes for both training and validation
         # Since this behavior might be undesirable, a warning message is displayed after the AdataPairDataset() call in setup()
 
         # Store metadata
-        #self.training_genes = training_genes
-        #self.n_cells = self.S.shape[0]
-        #self.n_spots = self.G.shape[0]
+        # self.training_genes = training_genes
+        # self.n_cells = self.S.shape[0]
+        # self.n_spots = self.G.shape[0]
         self.n_genes = len(training_genes)
 
     def __len__(self):
@@ -217,6 +216,8 @@ class AdataPairDataset(Dataset):
             'S': self.S[:, self.genes_idx],
             'G': self.G[:, self.genes_idx],
             'genes_number': len(self.genes_idx) if not isinstance(self.genes_idx, slice) else self.n_genes,
+            'spatial_graph_conn': self.spatial_graph_conn,
+            'spatial_graph_dist': self.spatial_graph_dist,
         }
 
 ### Utilities ###
@@ -268,8 +269,3 @@ def annotate_gene_sparsity(adata: sc.AnnData,):
         """
     arr = (adata.X != 0).mean(axis=0)  # gene-sparsity array
     adata.var["sparsity"] = 1 - (arr.A1 if hasattr(arr, "A1") else np.ravel(arr))  # .A1 flattens sparse matrix to 1D dense array
-
-
-
-#TODO: Function for spatial data binning, called in setup
-

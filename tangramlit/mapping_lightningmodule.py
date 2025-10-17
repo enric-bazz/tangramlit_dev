@@ -34,13 +34,13 @@ class MapperLightning(pl.LightningModule):
             target_count=None,
             lambda_sparsity_g1=0,
             lambda_neighborhood_g1=0,
-            voxel_weights=None,
+            # voxel_weights=None,
             lambda_getis_ord=0,
             lambda_geary=0,
             lambda_moran=0,
-            spatial_weights=None,
-            neighborhood_filter=None,
-            ct_encode=None,
+            # spatial_weights=None,
+            # neighborhood_filter=None,
+            # ct_encode=None,
             lambda_ct_islands=0,
             cluster_label=None,
     ):
@@ -119,7 +119,6 @@ class MapperLightning(pl.LightningModule):
             }
 
 
-
     def setup(self, stage=None):
         """
             Initialize mapping matrices using data dimensions from datamodule.
@@ -134,6 +133,9 @@ class MapperLightning(pl.LightningModule):
             S, G = batch['S'], batch['G']
             n_cells, n_genes_sc = S.shape
             n_spots, n_genes_st = G.shape
+
+            # Get spatial graph from batch
+            graph_conn, graph_dist = batch['spatial_graph_conn'], batch['spatial_graph_dist']
 
             # Set random seed if specified
             if self.hparams.random_state is not None:
@@ -152,51 +154,61 @@ class MapperLightning(pl.LightningModule):
             # Define uniform density prior
             self.d_prior = torch.ones(n_spots) / n_spots
 
-            # Compute spatial weights and register as buffers
-            voxel_weights, neighborhood_filter, ct_encode, spatial_weights = None, None, None, None
-            if self.hparams.lambda_neighborhood_g1 > 0:
-                voxel_weights = self._compute_spatial_weights(G, standardized=True, self_inclusion=True)
-            if self.hparamslambda_ct_islands > 0:
-                neighborhood_filter = self._compute_spatial_weights(G, standardized=False, self_inclusion=False)
+            # Spatial weights
+            voxel_weights = neighborhood_filter = spatial_weights_morangeary = spatial_weights_getisord = None
+            # Mapping: (condition, buffer name, kwargs for compute_spatial_weights)
+            buffer_map = [
+                (self.hparams.lambda_neighborhood_g1 > 0, "voxel_weights", dict(standardized=True, self_inclusion=True)),
+                (self.hparams.lambda_ct_islands > 0, "neighborhood_filter", dict(standardized=False, self_inclusion=False)),
+                (self.hparams.lambda_moran > 0 or self.hparams.lambda_geary > 0, "spatial_weights_morangeary", dict(standardized=True, self_inclusion=False)),
+                (self.hparams.lambda_getis_ord > 0, "spatial_weights_getisord", dict(standardized=False, self_inclusion=True)),
+            ]
+            # Compute and register buffers (loaded in state dict)
+            for cond, name, kwargs in buffer_map:
+                if cond:
+                    tensor = self._compute_spatial_weights(graph_conn, graph_dist, **kwargs)
+                    self.register_buffer(name, tensor)
+
+            # Compute cluster encoding and register as buffer
+            ct_encode = None
+            if self.hparams.lambda_ct_islands > 0:
                 ct_encode = ut.one_hot_encoding(S.obs[self.hparams.cluster_label]).values
-            if self.hparams.lambda_moran > 0 or self.hparams.lambda_geary > 0:
-                spatial_weights = self._compute_spatial_weights(G, standardized=True, self_inclusion=False)
-            if self.hparams.lambda_getis_ord > 0:
-                spatial_weights = self._compute_spatial_weights(G, standardized=False, self_inclusion=True)
+                self.register_buffer("ct_encode", ct_encode)
 
-            # NOTE: spatial_weights is overwritten when both G* and I/C are required
-
-      
-            # Register as buffers
-            for attr in ["voxel_weights", "neighborhood_filter", "spatial_weights", "ct_encode"]:
-                val = getattr(self.hparams, attr)
-                if val is not None:
-                    setattr(self.hparams, attr, torch.tensor(val, dtype=torch.float32))
             # Compute LISA on ground truth (reference values)
             self.getis_ord_G_star_ref, self.moran_I_ref, self.gearys_C_ref = self._spatial_local_indicators(G)
+            print('lol')
 
 
-    def _compute_spatial_weights(self, batch, standardized, self_inclusion):
+    def _compute_spatial_weights(self, connectivities, distances, standardized, self_inclusion):
         """
             Compute spatial weights matrix.
             Contains either row-standardized distances or binary adjacencies. Can include self or not (1 or 0 diagonal).
+
+            Args:
+                connectivities (torch.tensor) = spatial graph connectivities (adjacency values of 0/1)
+                distances (torch.tensor) = spatial graph distances (euclidean)
+                standardized (bool) = Whether the spatial distances matrix is row-standardized or not.
+                self_inclusion (bool) = Whether the spatial weights matrix includes the diagonal (1s).
+
+            Returns:
+                A (n_spots, n_spots) torch.tensor with:
+                    - adjacency-filtered row-normalised spatial distances if standardize == True
+                    - connectivity weights (0/1) if standardize == False
+                with diagonal entries based on the value of self_inclusion.
+
         """
         if standardized:
-            connectivities = batch.obsp['spatial_connectivities'].copy()
-            distances = batch.obsp['spatial_distances'].copy()
-
             # Row-normalize distances
-            distances_norm = sklearn.preprocessing.normalize(distances, norm="l1", axis=1, copy=False)
-
+            distances_norm = torch.from_numpy(
+                sklearn.preprocessing.normalize(distances, norm="l1", axis=1, copy=False).astype("float32")
+                )
             # Mask normalized distances with connectivity (keep only neighbor links)
-            weighted_adj = connectivities.multiply(distances_norm)
-
-            # Make dense
-            spatial_weights = weighted_adj.todense()
+            spatial_weights = connectivities.multiply(distances_norm)
         else:
-            spatial_weights = batch.obsp['spatial_connectivities'].todense()
+            spatial_weights = connectivities
         if self_inclusion:
-            spatial_weights += np.eye(spatial_weights.shape[0])
+            spatial_weights += np.eye(spatial_weights.shape[0], dtype=np.float32)
 
         return spatial_weights
 
@@ -205,34 +217,36 @@ class MapperLightning(pl.LightningModule):
             Compute spatial local indicators for the given spatial gene expression matrix.
             Defined as a method to access lambda_getis_ord, lambda_moran, lambda_geary, and spatial_weights attributes.
             G is call-dependent so is passed as an argument.
+            Output tensors are computed on the Dataloader batch and inherit its device, thus should move to device with data.
 
             Args:
                 G (torch.tensor), shape = (number_spots, number_genes): Spatial gene expression matrix defined in the DataModule.
+
+            Returns:
+                A tuple containing local indicators, each a torch.tensor with shape (n_genes, n_spots)
         """
         # Getis Ord G*
         getis_ord_G_star = None
         if self.hparams.lambda_getis_ord > 0:
-            getis_ord_G_star = (self.hparams.spatial_weights @ G) / G.sum(dim=0)
+            getis_ord_G_star = (self.spatial_weights_getisord @ G) / G.sum(dim=0)
 
         # Moran's I
         moran_I = None
         if self.hparams.lambda_moran > 0:
             z = G - G.mean(dim=0)
-            moran_I = (G.shape[0] * z * (self.hparams.spatial_weights @ z)) / torch.sum(z * z, dim=0)
+            moran_I = (G.shape[0] * z * (self.spatial_weights_morangeary @ z)) / torch.sum(z * z, dim=0)
 
         # Geary's C
         gearys_C = None
         if self.hparams.lambda_geary > 0:
             n_spots = G.shape[0]
             m2 = torch.sum((G - G.mean(dim=0)) ** 2, dim=0) / (n_spots - 1)
-            weighted_diff_sq = self.hparams.spatial_weights.unsqueeze(2) * ((G[None, :, :] - G[:, None, :]) ** 2)
+            weighted_diff_sq = self.spatial_weights_morangeary.unsqueeze(2) * ((G[None, :, :] - G[:, None, :]) ** 2)
             # NOTE: None entries add a singleton dimension, Torch broadcasts to (n_spots, n_spots, n_cells)
             gearys_C = weighted_diff_sq.sum(dim=(0, 1)) / (2 * m2)
 
         return getis_ord_G_star, moran_I, gearys_C
     
-    # TODO: refact. spatial weights
-
 
     def forward(self):
         """
@@ -322,8 +336,8 @@ class MapperLightning(pl.LightningModule):
 
         # Spatial neighborhood-based gene expression term
         if self.hparams.lambda_neighborhood_g1 > 0:
-            gv_neighborhood_term = self.hparams.lambda_neighborhood_g1 * cosine_similarity(self.hparams.voxel_weights @ G_pred,
-                                                                                    self.hparams.voxel_weights @ G_train,
+            gv_neighborhood_term = self.hparams.lambda_neighborhood_g1 * cosine_similarity(self.voxel_weights @ G_pred,
+                                                                                    self.voxel_weights @ G_train,
                                                                                     dim=0).mean()
         else:
             gv_neighborhood_term = 0
@@ -343,8 +357,8 @@ class MapperLightning(pl.LightningModule):
 
         # Cell type island enforcement
         if self.hparams.lambda_ct_islands > 0:
-            ct_map = (M_probs.T @ self.hparams.ct_encode)
-            ct_island_term = self.hparams.lambda_ct_islands * (torch.max((ct_map) - (self.hparams.neighborhood_filter @ ct_map),
+            ct_map = (M_probs.T @ self.ct_encode)
+            ct_island_term = self.hparams.lambda_ct_islands * (torch.max((ct_map) - (self.neighborhood_filter @ ct_map),
                                                                     torch.tensor([0], dtype=torch.float32)).mean())
         else:
             ct_island_term = 0

@@ -50,7 +50,6 @@ class MyDataModule(LightningDataModule):
         # Compute spatial neighbors needed for the neighborhood extension of Tangram
         if ('spatial_connectivities' 'spatial_distances') not in adata_st.obsp.keys():
             sq.gr.spatial_neighbors(self.adata_st, set_diag=False, key_added="spatial")
-        # If not in refined mode, spatial coordinates are not required in the input anndata
 
 
     def prepare_data(self):
@@ -80,7 +79,7 @@ class MyDataModule(LightningDataModule):
         self.adata_st.uns['overlap_genes'] = list(overlap_genes)
 
         # 5. Filter all-zero-valued genes and get filtered overlap (candidate training genes)
-        # sc.pp.filter_genes() returns tuple containing: (a boolean array indicating which genes were filtered out, the number of cells per gene)
+        # scanpy.pp.filter_genes() returns tuple containing: (a boolean array indicating which genes were filtered out, the number of cells per gene)
         filtered_genes_sc, _ = sc.pp.filter_genes(self.adata_sc, min_cells=1, inplace=False)  # skip n_cells
         filtered_genes_st, _ = sc.pp.filter_genes(self.adata_st, min_cells=1, inplace=False)  # skip n_cells
         # Get gene names by masking the adata with boolean arrays
@@ -191,6 +190,10 @@ class AdataPairDataset(Dataset):
             logging.error(f"Spatial AnnData X has unrecognized type: {X_type}")
             raise NotImplementedError
 
+        # Spatial Graph (both objects returned by squidpy.gr.spatial_neighbors() are of type csr_matrix)
+        self.spatial_graph_conn = torch.tensor(adata_st.obsp['spatial_connectivities'].toarray(), dtype=torch.float32)  # connectivities
+        self.spatial_graph_dist = torch.tensor(adata_st.obsp['spatial_distances'].toarray(), dtype=torch.float32)  # distances
+
         # Get train/val genes indexes from names
         self.genes_idx = gene_names_to_indices(gene_names=genes_names, adata=adata_st) if genes_names is not None else slice(None)
         # NOTE: When indices are `None`, it defaults to using all genes for both training and validation
@@ -213,6 +216,8 @@ class AdataPairDataset(Dataset):
             'S': self.S[:, self.genes_idx],
             'G': self.G[:, self.genes_idx],
             'genes_number': len(self.genes_idx) if not isinstance(self.genes_idx, slice) else self.n_genes,
+            'spatial_graph_conn': self.spatial_graph_conn,
+            'spatial_graph_dist': self.spatial_graph_dist,
         }
 
 ### Utilities ###

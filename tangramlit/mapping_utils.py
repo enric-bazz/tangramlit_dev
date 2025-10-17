@@ -57,7 +57,7 @@ def validate_mapping_inputs(
     """
 
     # Check invalid values for arguments
-    if lambda_g1 > 0:
+    if not lambda_g1 > 0:
         raise ValueError("lambda_g1 cannot be 0.")
 
     # Validate anndata objects
@@ -80,7 +80,6 @@ def validate_mapping_inputs(
             raise ValueError("train_genes_names and val_genes_names must be valid indices.")
         elif set(train_genes_names).intersection(set(val_genes_names)):
             raise ValueError("train_genes_names and val_genes_names must not intersect.")
-
 
     # Validate training numerical parameters
     if num_epochs <= 0:
@@ -109,7 +108,7 @@ def validate_mapping_inputs(
                 "cluster_label must be specified for the cell type island loss term."
             )
 
-    # Check spatial coordinates for refined mode
+    # Check spatial coordinates
     if 'spatial' not in adata_st.obsm.keys():
         raise ValueError("'spatial' key is missing in adata_st.obsm.")
         
@@ -126,17 +125,13 @@ def validate_mapping_inputs(
 
     # Create hyperparameters dictionary for all next calls
     hyperparameters = {}
-    # Add filter
-    hyperparameters['filter'] = filter
-
-    # Add learning rate and n_epochs
-    hyperparameters['learning_rate'] = learning_rate
-    hyperparameters['num_epochs'] = num_epochs
-    # Add RNG seed
-    hyperparameters['random_state'] = random_state
+    hyperparameters['filter'] = filter  # filter
+    hyperparameters['learning_rate'] = learning_rate  # learning rate
+    hyperparameters['num_epochs'] = num_epochs  # number of epochs
+    hyperparameters['random_state'] = random_state  # RNG seed
 
     # Loss
-    loss_terms = {
+    loss_coeffs = {
         "lambda_d": lambda_d,  # KL (ie density) term
         "lambda_g1": lambda_g1,  # gene-voxel cos sim
         "lambda_g2": lambda_g2,  # voxel-gene cos sim
@@ -151,7 +146,7 @@ def validate_mapping_inputs(
         "lambda_ct_islands": lambda_ct_islands,  # ct islands enforcement
         "cluster_label": cluster_label,  # labels column
     }
-    hyperparameters.update(loss_terms)
+    hyperparameters.update(loss_coeffs)
     if filter:
         filter_terms = {
             "lambda_count": lambda_count,  # regularizer: enforce target number of cells
@@ -232,41 +227,16 @@ def map_cells_to_space(
     # Input control function
     hyperparameters = validate_mapping_inputs(**{k: v for k, v in locals().items() if k in validate_mapping_inputs.__code__.co_varnames})  # pass all args
 
-    # Call the data module to retrieve batch size
+    # Initialize the model
+    model = MapperLightning(**hyperparameters)
+
+    # Initialize DataModule
     data = MyDataModule(adata_sc=adata_sc,
                         adata_st=adata_st,
                         input_genes=input_genes,
                         train_genes_names=train_genes_names,
                         val_genes_names=val_genes_names,
                         )
-    # NOTE: Need to create the datamodule instance before computing spatial weights, for which the spatial neighborhood graph is required
-
-    # Compute spatial weights for refined mode
-    voxel_weights, neighborhood_filter, ct_encode, spatial_weights = None, None, None, None
-    if lambda_neighborhood_g1 > 0:
-        voxel_weights = compute_spatial_weights(adata_st, standardized=True, self_inclusion=True)
-    if lambda_ct_islands > 0:
-        neighborhood_filter = compute_spatial_weights(adata_st, standardized=False, self_inclusion=False)
-        ct_encode = ut.one_hot_encoding(adata_sc.obs[cluster_label]).values
-    if lambda_moran > 0 or lambda_geary > 0:
-        spatial_weights = compute_spatial_weights(adata_st, standardized=True, self_inclusion=False)
-    if lambda_getis_ord > 0:
-        spatial_weights = compute_spatial_weights(adata_st, standardized=False, self_inclusion=True)
-
-    # Add to hyperparameters dictionary
-    hyperparameters['spatial_weights'] = spatial_weights
-    hyperparameters['neighborhood_filter'] = neighborhood_filter
-    hyperparameters['ct_encode'] = ct_encode
-    hyperparameters['voxel_weights'] = voxel_weights
-
-    # NOTE: This step is implemented here as it requires both the lambda coefficientss and the anndata objects.
-    # It is possible to implement it in the LightningDataModule, but it would require passing the lambda values
-    # to the LightningDataModule and then to the LightningModule. This would require modifying the LightningDataModule
-    # to accept lambda values as input.
-    # The same goes for the PytorchLightningModule that would, instead, require the anndata objects as inputs.
-
-    # Initialize the model
-    model = MapperLightning(**hyperparameters)
 
     # Customize ModelCheckpoint callback to avoid memory blow-up
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
@@ -344,10 +314,10 @@ def map_cells_to_space(
         'l2_term': model.loss_history['l2_term'],
         'sparsity_term': model.loss_history['sparsity_term'],
         'neighborhood_term': model.loss_history['neighborhood_term'],
-        'ct_island_term': model.loss_history['ct_island_term'],
         'getis_ord_term': model.loss_history['getis_ord_term'],
         'moran_term': model.loss_history['moran_term'],
         'geary_term': model.loss_history['geary_term'],
+        'ct_island_term': model.loss_history['ct_island_term'],
     }
     # Add filter terms only if filter was used
     if model.hparams.filter:
@@ -365,31 +335,6 @@ def map_cells_to_space(
     adata_map.uns['training_history'] = training_history
 
     return adata_map, model, data
-
-
-def compute_spatial_weights(adata_st, standardized, self_inclusion):
-    """
-        Compute spatial weights matrix.
-        Contains either row-standardized distances or binary adjacencies. Can include self or not (1 or 0 diagonal).
-    """
-    if standardized:
-        connectivities = adata_st.obsp['spatial_connectivities'].copy()
-        distances = adata_st.obsp['spatial_distances'].copy()
-
-        # Row-normalize distances
-        distances_norm = sklearn.preprocessing.normalize(distances, norm="l1", axis=1, copy=False)
-
-        # Mask normalized distances with connectivity (keep only neighbor links)
-        weighted_adj = connectivities.multiply(distances_norm)
-
-        # Make dense
-        spatial_weights = weighted_adj.todense()
-    else:
-        spatial_weights = adata_st.obsp['spatial_connectivities'].todense()
-    if self_inclusion:
-        spatial_weights += np.eye(spatial_weights.shape[0])
-
-    return spatial_weights
 
 def project_sc_genes_onto_space(adata_map, datamodule):
     """
@@ -607,7 +552,7 @@ def cross_validate_mapping(
             input_genes=input_genes,  # input genes list
             train_genes_names=train_genes,  # training genes of current fold
             val_genes_names=test_genes,  # validation genes of current fold
-            mode=mode,
+            filter=False,
             learning_rate=learning_rate,
             num_epochs=num_epochs,
             lambda_d=lambda_d,

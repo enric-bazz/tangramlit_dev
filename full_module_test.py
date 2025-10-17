@@ -85,11 +85,15 @@ def train_validate_mapper(data, config, random_state=None):
     n_train = int(len(shared_genes) * train_ratio)
     train_genes = shared_genes[:n_train]
     val_genes = shared_genes[n_train:]
+    for k in ['train_genes_names', 'val_genes_names']:
+        config.pop(k, None)
 
     #Train
     adata_map, mapper, datamodule = tgl.map_cells_to_space(
         adata_sc,
         adata_st,
+        train_genes_names=train_genes,
+        val_genes_names=val_genes,
         **config
         )
     
@@ -125,7 +129,7 @@ def main():
     with open("train_config.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-    train_mapper(data, config)
+    # train_mapper(data, config)
 
     _ , shared_genes = train_validate_mapper(data, config)
 

@@ -122,7 +122,8 @@ def cv_mapper_genes(data, config, genes_list):
 
 def main():
 
-    path = "/nfsd/sysbiobig/bazzaccoen/tangramlit_dev/data"
+    # path = "/nfsd/sysbiobig/bazzaccoen/tangramlit_dev/data"
+    path = "C:/Users/enric/tangram/myDataCropped"
 
     data = data_loading(path)
 

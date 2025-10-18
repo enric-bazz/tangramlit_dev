@@ -107,6 +107,16 @@ def validate_mapping_inputs(
             raise ValueError(
                 "cluster_label must be specified for the cell type island loss term."
             )
+    # Check for missing values in cluster_label
+    n_invalid = adata_sc.obs[cluster_label].isna().sum()
+    if n_invalid > 0:        
+        # Get boolean mask of valid cells
+        valid_cells = ~adata_sc.obs[cluster_label].isna()
+                
+        logging.warning(f"Found {n_invalid} cells in adata_sc with NaN `cluster_label` annotations. These cells will be removed.")
+
+        # Remove cellss with NaN labels
+        adata_sc._inplace_subset_obs(valid_cells)
 
     # Check spatial coordinates
     if 'spatial' not in adata_st.obsm.keys():
@@ -257,7 +267,7 @@ def map_cells_to_space(
     early_stop = EarlyStopping(
         monitor="val_score",  # monitor validation score
         min_delta=0.001,  # score minimum improvement loss
-        patience=5,  # related to check_val_every_n_epoch
+        patience=1,  # related to check_val_every_n_epoch
         verbose=True,
         mode="max",
         check_on_train_epoch_end=False,  # val_score is in validation_step()
@@ -274,7 +284,7 @@ def map_cells_to_space(
         log_every_n_steps=1,  # log every training step == epoch
         enable_checkpointing=True,
         enable_progress_bar=True,
-        check_val_every_n_epoch=10,  # validation loop after every N training epochs
+        check_val_every_n_epoch=50,  # validation loop after every N training epochs
     )
 
     # Train the model

@@ -22,3 +22,6 @@ data/
 # TensorBoard logs
 tb_logs
 tb_logs/
+
+# Lightninh checkpoints
+checkpoints/

@@ -144,7 +144,6 @@ def validate_mapping_inputs(
         "lambda_moran": lambda_moran,  # Moran's I weighting
         "lambda_geary": lambda_geary,  # Geary's C weighting
         "lambda_ct_islands": lambda_ct_islands,  # ct islands enforcement
-        "cluster_label": cluster_label,  # labels column
     }
     hyperparameters.update(loss_coeffs)
     if filter:
@@ -236,6 +235,7 @@ def map_cells_to_space(
                         input_genes=input_genes,
                         train_genes_names=train_genes_names,
                         val_genes_names=val_genes_names,
+                        cluster_label=cluster_label,
                         )
 
     # Customize ModelCheckpoint callback to avoid memory blow-up

@@ -38,7 +38,6 @@ class MapperLightning(pl.LightningModule):
             lambda_geary=0,
             lambda_moran=0,
             lambda_ct_islands=0,
-            cluster_label=None,
     ):
         """
         Lightning Module initializer.
@@ -64,7 +63,6 @@ class MapperLightning(pl.LightningModule):
             lambda_moran (float): Optional. Strength of Moran's I preservation. Default is 0.
             lambda_ct_islands: Optional. Strength of ct islands enforcement. Default is 0.
             lambda_ct_islands: Optional. Strength of ct islands enforcement. Default is 0.
-            cluster_label (str): Name of adata.obs column containing labels.
         """
 
         super().__init__()
@@ -129,6 +127,10 @@ class MapperLightning(pl.LightningModule):
             # Get spatial graph from batch
             graph_conn, graph_dist = batch['spatial_graph_conn'], batch['spatial_graph_dist']
 
+            # Get single cell annotation OHE and register buffer
+            ct_encode = batch['A']
+            self.register_buffer("ct_encode", ct_encode)
+
             # Set random seed if specified
             if self.hparams.random_state is not None:
                 torch.manual_seed(self.hparams.random_state)
@@ -160,12 +162,6 @@ class MapperLightning(pl.LightningModule):
                 if cond:
                     tensor = self._compute_spatial_weights(graph_conn, graph_dist, **kwargs)
                     self.register_buffer(name, tensor)
-
-            # Compute cluster encoding and register as buffer
-            ct_encode = None
-            if self.hparams.lambda_ct_islands > 0:
-                ct_encode = ut.one_hot_encoding(S.obs[self.hparams.cluster_label]).values
-                self.register_buffer("ct_encode", ct_encode)
 
             # Compute LISA on ground truth (reference values)
             self.getis_ord_G_star_ref, self.moran_I_ref, self.gearys_C_ref = self._spatial_local_indicators(G)

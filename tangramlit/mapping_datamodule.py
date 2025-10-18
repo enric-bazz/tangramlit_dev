@@ -1,4 +1,5 @@
 import logging
+import pandas as pd
 import numpy as np
 import scanpy as sc
 import squidpy as sq
@@ -20,7 +21,8 @@ class MyDataModule(LightningDataModule):
                  adata_st=None,
                  input_genes=None,
                  train_genes_names=None,
-                 val_genes_names=None
+                 val_genes_names=None,
+                 cluster_label=None,
                  ):
         """
         Lightly preprocessed single-cell and spatial anndata objects.
@@ -31,6 +33,7 @@ class MyDataModule(LightningDataModule):
             input_genes (list): List of input genes to use for training. If None, use all genes shared between adata_sc and adata_st.
             train_genes_names (list): List of names of genes to use for training. If None, use all genes shared between adata_sc and adata_st.
             val_genes_names (list): List of names of genes to use for validation.
+            cluster_label (str): Field in `adata_sc.obs` used for clustering/annotating single cell data.
         """
         super().__init__()
         self.adata_sc = adata_sc
@@ -38,6 +41,7 @@ class MyDataModule(LightningDataModule):
         self.input_genes = input_genes  # Allow passing specific genes for training
         self.train_genes_names = train_genes_names
         self.val_genes_names = val_genes_names
+        self.cluster_label = cluster_label
 
         # Turn all gene names to lowercase
         if self.input_genes is not None:
@@ -111,6 +115,7 @@ class MyDataModule(LightningDataModule):
         self.train_dataset = AdataPairDataset(self.adata_sc,
                                               self.adata_st,
                                               genes_names=self.train_genes_names,
+                                              cluster_label=self.cluster_label,
                                               )
         self.val_dataset = AdataPairDataset(self.adata_sc,
                                             self.adata_st,
@@ -160,11 +165,13 @@ class AdataPairDataset(Dataset):
             adata_st (AnnData): Spatial AnnData object.
             genes_names (list): List of gene names to use for training/validation depending on the call.
                 If None, use all genes shared between adata_sc and adata_st.
+            cluster_label (str): Field in `adata_sc.obs` used for clustering/annotating single cell data.
     """
     def __init__(self,
                  adata_sc,
                  adata_st,
                  genes_names=None,
+                 cluster_label=None,
                  ):
 
         # Get training genes from adata.uns['training_genes'] - defined in prepare_data()
@@ -194,6 +201,10 @@ class AdataPairDataset(Dataset):
         self.spatial_graph_conn = torch.tensor(adata_st.obsp['spatial_connectivities'].toarray(), dtype=torch.float32)  # connectivities
         self.spatial_graph_dist = torch.tensor(adata_st.obsp['spatial_distances'].toarray(), dtype=torch.float32)  # distances
 
+        # A matrix (cluster/annotation OHE)
+        if cluster_label is not None:  # run only on self.train_dataset() call
+            self.A = ohe_cluster_label(adata_sc.obs[cluster_label])
+
         # Get train/val genes indexes from names
         self.genes_idx = gene_names_to_indices(gene_names=genes_names, adata=adata_st) if genes_names is not None else slice(None)
         # NOTE: When indices are `None`, it defaults to using all genes for both training and validation
@@ -210,7 +221,7 @@ class AdataPairDataset(Dataset):
 
     def __getitem__(self, idx):
         """
-        Returns sliced S and G tensors according to input indexes (for training or validation).
+            Returns sliced S and G tensors according to input indexes (for training or validation).
         """
         return {
             'S': self.S[:, self.genes_idx],
@@ -218,25 +229,26 @@ class AdataPairDataset(Dataset):
             'genes_number': len(self.genes_idx) if not isinstance(self.genes_idx, slice) else self.n_genes,
             'spatial_graph_conn': self.spatial_graph_conn,
             'spatial_graph_dist': self.spatial_graph_dist,
+            'A': self.A if hasattr(self, "A") else None,
         }
 
 ### Utilities ###
 
 def gene_names_to_indices(gene_names, adata):
     """
-    Get indices of genes in AnnData object's var, handling case sensitivity.
-    Only includes genes that are present in adata.uns['training_genes'].
+        Get indices of genes in AnnData object's var, handling case sensitivity.
+        Only includes genes that are present in adata.uns['training_genes'].
 
-    Args:
-        gene_names (list): List of gene names to find indices for
-        adata (AnnData): AnnData object to search in
+        Args:
+            gene_names (list): List of gene names to find indices for
+            adata (AnnData): AnnData object to search in
 
-    Returns:
-        list: List of indices corresponding to the input gene names
+        Returns:
+            list: List of indices corresponding to the input gene names
 
-    Raises:
-        ValueError: If any gene name is not found in the AnnData object
-        KeyError: If 'training_genes' is not present in adata.uns
+        Raises:
+            ValueError: If any gene name is not found in the AnnData object
+            KeyError: If 'training_genes' is not present in adata.uns
     """
 
     # Find indices for each gene name
@@ -269,3 +281,19 @@ def annotate_gene_sparsity(adata: sc.AnnData,):
         """
     arr = (adata.X != 0).mean(axis=0)  # gene-sparsity array
     adata.var["sparsity"] = 1 - (arr.A1 if hasattr(arr, "A1") else np.ravel(arr))  # .A1 flattens sparse matrix to 1D dense array
+
+def ohe_cluster_label(cluster_labels):
+    """
+        Given a Series of cluster labels, returns a one-hot encoded tensor.
+
+        Args:
+            cluster_labels (pandas.Series): labels to OHE.
+
+        Returns:
+            torch.Tensor: shape (n_cells, n_clusters), dtype=float32.
+    """
+    labels = pd.Categorical(cluster_labels)
+    label_codes = torch.tensor(labels.codes, dtype=torch.long)  # torch.nn.functional.one_hot() accepts torch.long
+    A = torch.nn.functional.one_hot(label_codes, num_classes=len(labels.categories)).float()
+    
+    return A

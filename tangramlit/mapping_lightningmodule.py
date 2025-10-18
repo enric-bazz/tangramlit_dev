@@ -34,13 +34,9 @@ class MapperLightning(pl.LightningModule):
             target_count=None,
             lambda_sparsity_g1=0,
             lambda_neighborhood_g1=0,
-            # voxel_weights=None,
             lambda_getis_ord=0,
             lambda_geary=0,
             lambda_moran=0,
-            # spatial_weights=None,
-            # neighborhood_filter=None,
-            # ct_encode=None,
             lambda_ct_islands=0,
             cluster_label=None,
     ):
@@ -63,14 +59,10 @@ class MapperLightning(pl.LightningModule):
             target_count (int): Optional. The number of cells to be filtered. Default is None.
             lambda_sparsity_g1 (float): Optional. Strength of sparsity weighted gene expression comparison. Default is 0.
             lambda_neighborhood_g1 (float): Optional. Strength of neighborhood weighted gene expression comparison. Default is 0.
-            voxel_weights (ndarray): Optional. Spatial weight used for neighborhood weighting, shape = (number_spots, number_spots).
             lambda_getis_ord (float): Optional. Strength of Getis-Ord G* preservation. Default is 0.
             lambda_geary (float): Optional. Strength of Geary's C preservation. Default is 0.
             lambda_moran (float): Optional. Strength of Moran's I preservation. Default is 0.
-            spatial_weights (ndarray): Optional. Spatial weight used for local spatial indicator preservation, shape = (number_spots, number_spots).
             lambda_ct_islands: Optional. Strength of ct islands enforcement. Default is 0.
-            neighborhood_filter (ndarray): Optional. Neighborhood filter used for cell type island preservation, shape = (number_spots, number_spots).
-            ct_encode(ndarray): Optional. One-hot encoding of cell types used for cell type island preservation, shape = (number_cells, number_cell types)
             lambda_ct_islands: Optional. Strength of ct islands enforcement. Default is 0.
             cluster_label (str): Name of adata.obs column containing labels.
         """
@@ -177,7 +169,6 @@ class MapperLightning(pl.LightningModule):
 
             # Compute LISA on ground truth (reference values)
             self.getis_ord_G_star_ref, self.moran_I_ref, self.gearys_C_ref = self._spatial_local_indicators(G)
-            print('lol')
 
 
     def _compute_spatial_weights(self, connectivities, distances, standardized, self_inclusion):
@@ -223,7 +214,7 @@ class MapperLightning(pl.LightningModule):
                 G (torch.tensor), shape = (number_spots, number_genes): Spatial gene expression matrix defined in the DataModule.
 
             Returns:
-                A tuple containing local indicators, each a torch.tensor with shape (n_genes, n_spots)
+                A tuple containing local indicators, each a torch.tensor with shape (n_genes, n_spots).
         """
         # Getis Ord G*
         getis_ord_G_star = None
@@ -269,11 +260,13 @@ class MapperLightning(pl.LightningModule):
     def training_step(self, batch):
         """
             Training step using data from the datamodule.
+            NOTE: Refinement loss terms are compute only if their lambda > 0, else term = 0.
+            NOTE: As of now, the main loss cannot be turned off.
 
             Returns:
                 step_output (dict): Dictionary containing the loss terms and other values to be logged.
             Defines:
-                self.epoch_losses (dict): Dictionary containing the loss terms.
+                self.epoch_values (dict): Dictionary containing the loss terms.
                     All optional terms are discarded if their respective lambda_ parameter is set to 0.
                     Compulsory terms are always included.
         """
@@ -288,14 +281,7 @@ class MapperLightning(pl.LightningModule):
             M_probs = self()  # Get softmax probabilities
 
         # Loss computation
-        # Density term
-        if self.hparams.filter:
-            d_pred = torch.log(M_probs_filtered.sum(axis=0) / (F_probs.sum()))
-        else:
-            d_pred = torch.log(M_probs.sum(axis=0) / self.M.shape[0])
-        density_term = self.hparams.lambda_d * self._density_criterion(d_pred, self.d_prior)
-
-        # Calculate expression terms
+        # Expression term
         if self.hparams.filter:
             G_pred = M_probs_filtered.T @ S_train
         else:
@@ -304,25 +290,20 @@ class MapperLightning(pl.LightningModule):
         vg_term = self.hparams.lambda_g2 * cosine_similarity(G_pred, G_train, dim=1).mean()
         expression_term = gv_term + vg_term
 
-        # Calculate entropy regularizer term
+        # Density term
+        if self.hparams.filter:
+            d_pred = torch.log(M_probs_filtered.sum(axis=0) / (F_probs.sum()))
+        else:
+            d_pred = torch.log(M_probs.sum(axis=0) / self.M.shape[0])
+        density_term = self.hparams.lambda_d * self._density_criterion(d_pred, self.d_prior)
+
+        # Entropy regularizer term
         regularizer_term = self.hparams.lambda_r * (torch.log(M_probs) * M_probs).sum()
 
-        # Calculate l1 and l2 regularization terms
+        # l1 and l2 regularization terms
         l1_term = self.hparams.lambda_l1 * self.M.abs().sum()
         l2_term = self.hparams.lambda_l2 * (self.M ** 2).sum()
         # NOTE: These terms act on the alignment matrix M, not the softmax matrix M_probs
-
-        # Calculate total vanilla loss
-        total_loss = density_term - expression_term - regularizer_term + l1_term + l2_term
-
-        # Define count term and filter regularizers (if filter mode)
-        if self.hparams.filter:
-            # Count term: abs( sum(f_i, over cells i) - n_target_cells)
-            count_term = self.hparams.lambda_count * torch.abs(F_probs.sum() - self.hparams.target_count)
-            # Filter regularizer: sum(f_i - f_i^2, over cells i)
-            f_reg = self.hparams.lambda_f_reg * (F_probs - F_probs * F_probs).sum()
-            # Update total loss
-            total_loss += count_term + f_reg
 
         # Sparsity weighted expression term
         if self.hparams.lambda_sparsity_g1 > 0:
@@ -363,8 +344,29 @@ class MapperLightning(pl.LightningModule):
         else:
             ct_island_term = 0
 
-        # Update total loss
-        total_loss += - gv_sparsity_term - gv_neighborhood_term - getis_ord_term - moran_term - gearys_term + ct_island_term 
+        # Total loss
+        total_loss = (
+            - expression_term
+            + density_term
+            - regularizer_term
+            + l1_term
+            + l2_term
+            - gv_sparsity_term
+            - gv_neighborhood_term
+            - getis_ord_term
+            - moran_term
+            - gearys_term
+            + ct_island_term
+        )
+
+        # Filter terms
+        if self.hparams.filter:
+            # Count term: abs( sum(f_i, over cells i) - n_target_cells)
+            count_term = self.hparams.lambda_count * torch.abs(F_probs.sum() - self.hparams.target_count)
+            # Filter regularizer: sum(f_i - f_i^2, over cells i)
+            f_reg = self.hparams.lambda_f_reg * (F_probs - F_probs * F_probs).sum()
+            # Update total loss
+            total_loss += count_term + f_reg 
 
         # Create the dictionary of loss terms
         step_output = {
@@ -409,8 +411,10 @@ class MapperLightning(pl.LightningModule):
         for key in self.loss_history.keys():
             if key in self.epoch_values:
                 self.loss_history[key].append(self.epoch_values[key])
+
         # Log to tensorboard logger
         self.log_dict(self.epoch_values, prog_bar=False, logger=True, on_epoch=True)
+
         # Print every N epochs
         if self.current_epoch % N == 0:
             losses = {
@@ -438,7 +442,7 @@ class MapperLightning(pl.LightningModule):
             'scheduler': ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10),
             'monitor': 'loss',  # monitor total loss for smoother trajectory
             'interval': 'epoch',
-            'frequency': 1
+            'frequency': 1,
         }
         return [optimizer], [scheduler]
 
@@ -454,9 +458,12 @@ class MapperLightning(pl.LightningModule):
 
     def validation_step(self, batch):
         """
-           Produces two different behaviors depending on the trainer function:
-           - if trainer.fit() is called (fn == 'fit'): computes the validation terms: score, spatial sparsity weighted score, auc, entropy.
-           - if trainer.validate() is called (fn == 'validate'): computes the validation metrics: ssim, pcc, rmse, js.
+           Produces two different behaviors depending on the trainer function.
+           The common behaviour is to compute the validation terms in val_dict: score, spatial sparsity weighted score, auc, entropy.
+           - if trainer.fit() is called (fn == 'fit'): log val_dict into 'train' logger for callbacks monitoring
+           - if trainer.validate() is called (fn == 'validate'): 
+                * computes additional validation metrics in metrics_dict: ssim, pcc, rmse, js
+                * updates val_dict and logs it into 'val' logger
 
            Args:
               batch: full validation batch.
@@ -480,25 +487,24 @@ class MapperLightning(pl.LightningModule):
         mask = G_val != 0
         gene_sparsity = mask.sum(axis=0) / G_val.shape[0]
         gene_sparsity = 1 - gene_sparsity.reshape((-1,))
+        # Sparsity weighted score
+        sp_sparsity_weighted_scores = ((gv_scores * (1 - gene_sparsity)) / (1 - gene_sparsity).sum())
+        # AUC (plot conditioned on trainer function)
+        plot_auc = self.trainer.state.fn == 'validate'
+        auc_score, _ = vm.poly2_auc(gv_scores, gene_sparsity, plot_auc=plot_auc)  # skip coordinates
+        # Entropy of the mapping probabilities
+        prob_entropy = - torch.mean(torch.sum((torch.log(M_probs) * M_probs), dim=1) / np.log(M_probs.shape[1]))
+        # Validation dictionary
+        val_dict = {'val_score': gv_scores.mean(),
+                    'val_sparsity-weighted_score': sp_sparsity_weighted_scores.mean(),
+                    'val_AUC': auc_score,
+                    'val_entropy': prob_entropy}
 
         if self.trainer.state.fn == 'fit':  # if trainer.fit() is called
-            # Sparsity weighted score
-            sp_sparsity_weighted_scores = ((gv_scores * (1 - gene_sparsity)) / (1 - gene_sparsity).sum())
-            # AUC (no plot)
-            auc_score, _ = vm.poly2_auc(gv_scores, gene_sparsity)  # skip coordinates
-            # Entropy of the mapping probabilities
-            prob_entropy = - torch.mean(torch.sum((torch.log(M_probs) * M_probs), dim=1) / np.log(M_probs.shape[1]))
-            # Validation dictionary
-            val_dict = {'Score': gv_scores.mean(),
-                        'Sparsity-weighted score': sp_sparsity_weighted_scores.mean(),
-                        'AUC': auc_score,
-                        'Entropy': prob_entropy}
-            # Log on progress bar with logger=False
-            self.log_dict(val_dict, prog_bar=True, logger=False, on_epoch=True)
+            # Log on progress bar and train logger
+            self.log_dict(val_dict, prog_bar=True, logger=True, on_epoch=True)
 
         if self.trainer.state.fn == 'validate':  # if trainer.validate() is called
-            # Plot auc fit on validation genes
-            auc_score, _ = vm.poly2_auc(gv_scores, gene_sparsity, plot_auc=True)  # skip coordinates
             # Define imputed and raw spatial expression arrays
             imputed_data = G_pred.detach().cpu().numpy()
             raw_data = G_val.detach().cpu().numpy()
@@ -507,8 +513,10 @@ class MapperLightning(pl.LightningModule):
                             'val_PCC': vm.pearsonr(raw_data, imputed_data).mean(),
                             'val_RMSE': vm.RMSE(raw_data, imputed_data).mean(),
                             'val_JS': vm.JS(raw_data, imputed_data).mean()}
+            # Add to validation dictionary
+            val_dict.update(metrics_dict)
             # Log on validation logger
-            self.log_dict(metrics_dict, prog_bar=False, logger=True, on_epoch=True)
+            self.log_dict(val_dict, prog_bar=False, logger=True, on_epoch=True)
 
     def on_validation_epoch_end(self):
         """

@@ -7,7 +7,7 @@ import yaml
 def data_loading(path):
     # Load cropped datasets
     adata_sc = ad.read_h5ad(path + "/test_sc_crop.h5ad")
-    adata_st = ad.read_h5ad(path + "/slice200_norm_with_spatial.h5ad")
+    adata_st = ad.read_h5ad(path + "/slice200_norm_reduced.h5ad")
 
     return (adata_sc, adata_st)
 
@@ -107,8 +107,6 @@ def cv_mapper_genes(data, config, genes_list):
     for k in ['input_genes', 'train_genes_names', 'val_genes_names']:
         config.pop(k, None)
 
-    a=2
-
     cv_results = tgl.cross_validate_mapping(
         adata_sc=data[0],
         adata_st=data[1],
@@ -118,12 +116,10 @@ def cv_mapper_genes(data, config, genes_list):
     return cv_results
 
 
-
-
 def main():
 
-    # path = "/nfsd/sysbiobig/bazzaccoen/tangramlit_dev/data"
-    path = "C:/Users/enric/tangram/myDataCropped"
+    path = "/nfsd/sysbiobig/bazzaccoen/tangramlit_dev/data"
+    # path = "C:/Users/enric/tangram/myDataCropped"
 
     data = data_loading(path)
 
@@ -134,7 +130,7 @@ def main():
 
     _ , shared_genes = train_validate_mapper(data, config)
 
-    cv_mapper_genes(data, config, genes_list=shared_genes)
+    # cv_mapper_genes(data, config, genes_list=shared_genes)
     
 
 if __name__ == "__main__":

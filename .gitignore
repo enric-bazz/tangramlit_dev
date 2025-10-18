@@ -22,3 +22,6 @@ data/
 # TensorBoard logs
 tb_logs
 tb_logs/
+
+# Local test script
+test_script.py

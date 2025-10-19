@@ -25,3 +25,6 @@ tb_logs/
 
 # Lightninh checkpoints
 checkpoints/
+
+# Results folder
+results/

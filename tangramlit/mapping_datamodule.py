@@ -102,8 +102,16 @@ class MyDataModule(LightningDataModule):
         # 7. Annotate training genes set in adata.uns['training_genes'] and adata.var['is_training']
         self.adata_sc.uns["training_genes"] = training_genes
         self.adata_st.uns["training_genes"] = training_genes
-        self.adata_sc.var["is_training"] = self.adata_sc.var.index.isin(training_genes)
-        self.adata_st.var["is_training"] = self.adata_st.var.index.isin(training_genes)
+        if self.train_genes_names is None:
+            self.adata_sc.var["is_training"] = self.adata_sc.var.index.isin(training_genes)
+            self.adata_st.var["is_training"] = self.adata_st.var.index.isin(training_genes)
+        else:
+            mask_sc = self.adata_sc.var.index.isin(training_genes) & self.adata_sc.var.index.isin(self.train_genes_names)
+            mask_st = self.adata_st.var.index.isin(training_genes) & self.adata_st.var.index.isin(self.train_genes_names)
+            self.adata_sc.var["is_training"] = mask_sc
+            self.adata_st.var["is_training"] = mask_st
+        # NOTE: adata.var['is_training'] == True iff the gene is both in the filtered shared genes (trainig_genes) and,
+        # if applicable, also selected in train_genes_names
 
 
     def setup(self, stage: str):

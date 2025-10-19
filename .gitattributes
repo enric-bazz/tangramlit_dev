@@ -1,0 +1,17 @@
+# normalize text files
+* text=auto
+
+# force LF for specific text files
+*.py      text eol=lf
+*.toml    text eol=lf
+*.lock    text eol=lf
+*.md      text eol=lf
+*.txt     text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+
+# binary files
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.pdf     binary

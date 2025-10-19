@@ -105,7 +105,7 @@ def validate_mapping_inputs(
     if lambda_ct_islands > 0:
         if cluster_label is None or cluster_label not in adata_sc.obs.keys():
             raise ValueError(
-                "cluster_label must be specified for the cell type island loss term."
+                "cluster_label must be specified and in `adata_sc.obs.keys()` to use the cell type island loss term."
             )
     # Check for missing values in cluster_label
     n_invalid = adata_sc.obs[cluster_label].isna().sum()
@@ -653,35 +653,35 @@ def project_sc_genes_onto_space(adata_map, datamodule):
         X=X_space,  # projected sc expression profiles
         obs=adata_map.var,  # spatial data spot IDs
         var=datamodule.adata_sc.var,  # all sc gene names
-        uns=datamodule.adata_sc.uns,  # unstructureed fields of sc data 
+        uns=datamodule.adata_sc.uns,  # unstructured fields of sc data 
     )
     # Annotate training genes in adata_ge based on spatial data annotation
     adata_ge.var["is_training"] = adata_ge.var.index.isin(datamodule.adata_st.var.index[datamodule.adata_st.var["is_training"]])
     
     return adata_ge
 
-def compare_spatial_gene_exp(adata_ge, datamodule, input_genes=None):
+def compare_spatial_gene_expr(adata_ge, datamodule, input_genes=None):
     """ 
         Compares generated spatial data with the true spatial data.
-        The main issue that arises when comparing the expression profiles of predicted and true spatial data is that non-expressed
-        genes (i.e. all-zeros), that are excluded from the training genes, cannot be used with the cossim metric directly.
+        NOTE: The main issue that arises when comparing the expression profiles of predicted and true spatial data is that non-expressed
+        genes (i.e. all-zeros), excluded from training genes, cannot be compared with cossim metric.
         To overcome this, non-expressed genes counts are set to an arbitrarily small value 'eps' to avoid zero division errors.
-        The resulting similarity is zero.
+        The resulting similarity with the predicted expression is zero, a value possible only in this scenario.
     
         Args:
             adata_ge (AnnData): generated spatial data returned by `project_sc_genes_onto_space()`.
             datamodule (LightningDataModule): LightningDataModule object containing the preprocessed single cell and spatial data (sparsity annotation).
-            genes (list): Optional. When passed, returned output will be subset on the list of genes. Default is None.
+            input_genes (list): Optional. When passed, returned output will be subset on the list of genes. Default is None.
     
         Returns:
-            Pandas Dataframe: a dataframe with columns: 'score', 'is_training', 'sparsity_st'(spatial data sparsity),
+            df_g (Pandas Dataframe): a dataframe with columns: 'score', 'is_training', 'sparsity_st'(spatial data sparsity),
                 'sparsity_sc'(single cell data sparsity), 'sparsity_diff'(spatial sparsity - single cell sparsity).
     """
     # Get all overlapping genes (training and not)
-    if input_genes is None:
-        overlap_genes = datamodule.adata_st.uns["overlap_genes"]
-    else:
-        overlap_genes = input_genes
+    overlap_genes = datamodule.adata_st.uns["overlap_genes"]
+    # Intersect with input genes
+    if input_genes:
+        overlap_genes = list(set(input_genes) & set(overlap_genes))
 
     # Annotate cosine similarity of each overlapping gene
     cos_sims = []

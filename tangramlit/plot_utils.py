@@ -9,7 +9,7 @@ from . import validation_metrics as vm
 
 def plot_training_history(adata_map, hyperpams=None, lambda_scale=True, log_scale=False):
     """
-        Plots a panel with all loss term curves in training
+        Plots a panel with all loss term curves in training.
 
         Args:
             adata_map (anndata object): input containing .uns["training_history"] returned by map_cells_to_space()
@@ -19,7 +19,7 @@ def plot_training_history(adata_map, hyperpams=None, lambda_scale=True, log_scal
 
         Returns:
             Note that the trainig step stores in adata_map.uns["training_history"] the loss terms for each epoch already scaled
-            by their respective hyperparameters, thus to get non scaled values we divide by the lambda.
+            by their respective hyperparameters, thus to get non scaled values we divide by the respective lambda.
         """
 
     # Check if training history is present
@@ -430,6 +430,7 @@ def plot_auc_curve(df_all_genes, test_genes=None):
         Returns:
             None
         """
+    df_all_genes = df_all_genes[test_genes]
     auc_score, ((pol_xs, pol_ys), (xs, ys)) = vm.poly2_auc(df_all_genes['score'], df_all_genes['sparsity_st'])
 
     plt.figure(figsize=(6, 5))

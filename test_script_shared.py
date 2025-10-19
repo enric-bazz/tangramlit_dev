@@ -8,7 +8,6 @@ def data_loading(path):
     # Load cropped datasets
     adata_sc = ad.read_h5ad(path + "/test_sc_crop.h5ad")
     adata_st = ad.read_h5ad(path + "/slice200_norm_reduced.h5ad")
-    # adata_st = ad.read_h5ad(path + "/slice200_norm_with_spatial.h5ad")
 
     return (adata_sc, adata_st)
 
@@ -24,7 +23,7 @@ def train_mapper(data, config):
     
     # sc gene projection
     ad_ge = tgl.project_sc_genes_onto_space(adata_map, datamodule)
-    df = tgl.compare_spatial_gene_exp(ad_ge, datamodule)
+    df = tgl.compare_spatial_gene_expr(ad_ge, datamodule)
     tgl.plot_training_scores(df)
     tgl.plot_auc_curve(df)
 
@@ -101,14 +100,19 @@ def train_validate_mapper(data, config, random_state=None):
     #Validate
     results = tgl.validate_mapping_experiment(mapper, datamodule)
 
-    return [adata_map, train_genes, val_genes, results], shared_genes
+    # sc gene projection
+    ad_ge = tgl.project_sc_genes_onto_space(adata_map, datamodule)
+    df = tgl.compare_spatial_gene_expr(ad_ge, datamodule)
+    tgl.plot_training_scores(df)
+    tgl.plot_auc_curve(df)
+
+
+    return [adata_map, train_genes, val_genes, results], shared_genes, mapper, datamodule
 
 def cv_mapper_genes(data, config, genes_list):
     # remove yaml input_genes
     for k in ['input_genes', 'train_genes_names', 'val_genes_names']:
         config.pop(k, None)
-
-    a=2
 
     cv_results = tgl.cross_validate_mapping(
         adata_sc=data[0],
@@ -119,12 +123,10 @@ def cv_mapper_genes(data, config, genes_list):
     return cv_results
 
 
-
-
 def main():
 
-    # path = "/nfsd/sysbiobig/bazzaccoen/tangramlit_dev/data"
-    path = "C:/Users/enric/tangram/myDataCropped"
+    path = "/nfsd/sysbiobig/bazzaccoen/tangramlit_dev/data"
+    # path = "C:/Users/enric/tangram/myDataCropped"
 
     data = data_loading(path)
 
@@ -133,9 +135,9 @@ def main():
 
     # train_mapper(data, config)
 
-    _ , shared_genes = train_validate_mapper(data, config)
+    _ , shared_genes, mapper, datamodule = train_validate_mapper(data, config)
 
-    cv_mapper_genes(data, config, genes_list=shared_genes)
+    # cv_mapper_genes(data, config, genes_list=shared_genes)
     
 
 if __name__ == "__main__":

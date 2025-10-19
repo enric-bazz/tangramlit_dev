@@ -9,7 +9,7 @@ from . import validation_metrics as vm
 
 def plot_training_history(adata_map, hyperpams=None, lambda_scale=True, log_scale=False):
     """
-        Plots a panel with all loss term curves in training
+        Plots a panel with all loss term curves in training.
 
         Args:
             adata_map (anndata object): input containing .uns["training_history"] returned by map_cells_to_space()
@@ -19,7 +19,7 @@ def plot_training_history(adata_map, hyperpams=None, lambda_scale=True, log_scal
 
         Returns:
             Note that the trainig step stores in adata_map.uns["training_history"] the loss terms for each epoch already scaled
-            by their respective hyperparameters, thus to get non scaled values we divide by the lambda.
+            by their respective hyperparameters, thus to get non scaled values we divide by the respective lambda.
         """
 
     # Check if training history is present
@@ -361,20 +361,21 @@ def traffic_light_plot(genes_list, values_sc=None, values_sp=None, figsize=(10, 
 
     # TODO: pass masks as pandas Series and use indexing for intersection --> use utils.get_matched_genes()
 
-def plot_training_scores(df, bins=10, alpha=0.7):
+def plot_training_scores(df_g, bins=10, alpha=0.7):
     """
-        Plots the 4-panel training diagnosis plot
+        Plots the 4-panel training diagnosis plot. Restricted on genes flagged as 'is_training'.
 
         Args:
-            adata_map (AnnData):
+            df_g (pandas.DataFrame): Contains overlap genes sparsity/score values produced by mapping_utils.compare_spatial_gene_expr()
             bins (int or string): Optional. Default is 10.
             alpha (float): Optional. Ranges from 0-1, and controls the opacity. Default is 0.7.
 
         Returns:
             None
     """
+    df_g = df_g.loc[df_g['is_training']]
+
     fig, axs = plt.subplots(1, 4, figsize=(12, 3), sharey=True)
-    #df = adata_map.uns["train_genes_df"]
     axs_f = axs.flatten()
 
     # set limits for axis
@@ -383,12 +384,12 @@ def plot_training_scores(df, bins=10, alpha=0.7):
         axs_f[i].set_xlim([0.0, 1.0])
         axs_f[i].set_ylim([0.0, 1.0])
 
-    #     axs_f[0].set_title('Training scores for single genes')
-    sns.histplot(data=df, y="score", bins=bins, ax=axs_f[0], color="coral")
+    axs_f[0].set_title('Training scores for single genes')
+    sns.histplot(data=df_g, y="score", bins=bins, ax=axs_f[0], color="coral")
 
     axs_f[1].set_title("score vs sparsity (single cells)")
     sns.scatterplot(
-        data=df,
+        data=df_g,
         y="score",
         x="sparsity_sc",
         ax=axs_f[1],
@@ -398,7 +399,7 @@ def plot_training_scores(df, bins=10, alpha=0.7):
 
     axs_f[2].set_title("score vs sparsity (spatial)")
     sns.scatterplot(
-        data=df,
+        data=df_g,
         y="score",
         x="sparsity_st",
         ax=axs_f[2],
@@ -408,7 +409,7 @@ def plot_training_scores(df, bins=10, alpha=0.7):
 
     axs_f[3].set_title("score vs sparsity (sp - sc)")
     sns.scatterplot(
-        data=df,
+        data=df_g,
         y="score",
         x="sparsity_diff",
         ax=axs_f[3],
@@ -419,18 +420,28 @@ def plot_training_scores(df, bins=10, alpha=0.7):
     plt.tight_layout()
     plt.show()
 
-def plot_auc_curve(df_all_genes, test_genes=None):
+def plot_auc_curve(df_g, test_genes=None):
     """
-            Plots auc curve which is used to evaluate model performance.
+        Plots auc curve of non-training genes score. Test genes are either input or deduced from df_g['is_training'].
 
         Args:
-            df_all_genes (Pandas dataframe): returned by compare_spatial_gene_exp(adata_ge, adata_sp);
-            test_genes (list): list of test genes, if not given, test_genes will be set to genes where 'is_training' field is False
+            df_g (pandas.DataFrame): returned by compare_spatial_gene_expr(adata_ge, adata_sp).
+            test_genes (list): list of test genes, if not given, test_genes will be set to genes where 'is_training' field is False.
 
         Returns:
             None
         """
-    auc_score, ((pol_xs, pol_ys), (xs, ys)) = vm.poly2_auc(df_all_genes['score'], df_all_genes['sparsity_st'])
+    if test_genes:
+        df_g = df_g[test_genes]
+    else:
+        df_g = df_g.loc[~df_g['is_training']]
+        df_g = df_g.loc[df_g['score'] != 0]  # remove 0-score genes
+
+    # If any test genes have score = 0 --> linalg does not converge
+    if (df_g['score'] == 0).any():
+        raise ValueError('Test genes have null score, CosSim not computable.')
+
+    auc_score, ((pol_xs, pol_ys), (xs, ys)) = vm.poly2_auc(df_g['score'], df_g['sparsity_st'], plot_auc=False)
 
     plt.figure(figsize=(6, 5))
 
@@ -450,3 +461,5 @@ def plot_auc_curve(df_all_genes, test_genes=None):
     # place a text box in upper left in axes coords
     plt.text(0.03, 0.1, textstr, fontsize=11, verticalalignment='top', bbox=props)
     plt.show()
+
+    # TODO: a bit redundant with validation_metrics.poly2_auc()

@@ -68,7 +68,6 @@ def poly2_auc(gv_scores, gene_sparsity, pol_deg=2, plot_auc=False):
     auc_coordinates = ((pol_xs, pol_ys), (xs, ys))
 
     if plot_auc:
-        fig = plt.figure()
         plt.figure(figsize=(6, 5))
 
         plt.plot(pol_xs, pol_ys, c='r')

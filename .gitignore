@@ -23,5 +23,8 @@ data/
 tb_logs
 tb_logs/
 
-# Local test script
-test_script.py
+# Lightninh checkpoints
+checkpoints/
+
+# Results folder
+results/

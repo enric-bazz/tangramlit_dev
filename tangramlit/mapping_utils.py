@@ -105,8 +105,18 @@ def validate_mapping_inputs(
     if lambda_ct_islands > 0:
         if cluster_label is None or cluster_label not in adata_sc.obs.keys():
             raise ValueError(
-                "cluster_label must be specified for the cell type island loss term."
+                "cluster_label must be specified and in `adata_sc.obs.keys()` to use the cell type island loss term."
             )
+    # Check for missing values in cluster_label
+    n_invalid = adata_sc.obs[cluster_label].isna().sum()
+    if n_invalid > 0:        
+        # Get boolean mask of valid cells
+        valid_cells = ~adata_sc.obs[cluster_label].isna()
+                
+        logging.warning(f"Found {n_invalid} cells in adata_sc with NaN `cluster_label` annotations. These cells will be removed.")
+
+        # Remove cellss with NaN labels
+        adata_sc._inplace_subset_obs(valid_cells)
 
     # Check spatial coordinates
     if 'spatial' not in adata_st.obsm.keys():
@@ -144,7 +154,6 @@ def validate_mapping_inputs(
         "lambda_moran": lambda_moran,  # Moran's I weighting
         "lambda_geary": lambda_geary,  # Geary's C weighting
         "lambda_ct_islands": lambda_ct_islands,  # ct islands enforcement
-        "cluster_label": cluster_label,  # labels column
     }
     hyperparameters.update(loss_coeffs)
     if filter:
@@ -236,26 +245,32 @@ def map_cells_to_space(
                         input_genes=input_genes,
                         train_genes_names=train_genes_names,
                         val_genes_names=val_genes_names,
+                        cluster_label=cluster_label,
                         )
 
     # Customize ModelCheckpoint callback to avoid memory blow-up
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        # dirpath="checkpoints/",
-        # filename="best-checkpoint",
-        save_top_k=0,
-        # monitor="val_loss",
-        # mode="min",
-        save_weights_only=True
+        dirpath="checkpoints/",
+        filename='{epoch}-{val_score:.3f}',
+        monitor="val_score",
+        verbose=True,
+        save_last=True,  # save last checkpoint separated from top k
+        save_top_k=3,  # top k models out of all checkpoints
+        mode="max",  # update with higher scores
+        auto_insert_metric_name=True,
+        save_weights_only=True,  # set = False to store optimizer, scheduler states
+        every_n_epochs=50,
+        save_on_train_epoch_end=False,  # val_score is in validation_step()
     )
 
     # Set early stopper
     early_stop = EarlyStopping(
-        monitor="main_loss",  # monitor training score
-        min_delta=0.001,  # score minimum improvement
-        patience=10,
-        verbose=False,
+        monitor="val_score",  # monitor validation score
+        min_delta=0.001,  # score minimum improvement loss
+        patience=1,  # related to check_val_every_n_epoch
+        verbose=True,
         mode="max",
-        check_on_train_epoch_end=True,
+        check_on_train_epoch_end=False,  # val_score is in validation_step()
     )
 
     # Create TB logger for training
@@ -263,16 +278,13 @@ def map_cells_to_space(
 
     # Initialize trainer
     trainer = pl.Trainer(
-        max_epochs=num_epochs,
-        # log_every_n_steps=print_each,
         logger=train_logger,
-        callbacks=[EpochProgressBar(), early_stop],
-        # callbacks=[checkpoint_callback],
-        enable_checkpointing=False,  # disable lightning_checkpoints
+        callbacks=[EpochProgressBar(), early_stop, checkpoint_callback],
+        max_epochs=num_epochs,
+        log_every_n_steps=1,  # log every training step == epoch
+        enable_checkpointing=True,
         enable_progress_bar=True,
-        check_val_every_n_epoch=200,
-        #num_sanity_val_steps=0,  # skip sanity check
-        #limit_val_batches=0,  # disables validation during fit
+        check_val_every_n_epoch=50,  # validation loop after every N training epochs
     )
 
     # Train the model
@@ -335,99 +347,6 @@ def map_cells_to_space(
     adata_map.uns['training_history'] = training_history
 
     return adata_map, model, data
-
-def project_sc_genes_onto_space(adata_map, datamodule):
-    """
-        Transfer gene expression from the single cell onto space.
-
-        Args:
-            adata_map (AnnData): cells-by-spots anndata object containing the mapping matrix.
-            datamodule (LightningDataModule): LightningDataModule object containing the preprocessed single cell and spatial data.
-                both are returned by map_cells_to_space().
-
-        Returns:
-            AnnData: spot-by-gene AnnData containing spatial gene expression from the single cell data.
-    """
-    # Make sc expression matrix dense
-    if hasattr(datamodule.adata_sc.X, "toarray"):
-        datamodule.adata_sc.X = datamodule.adata_sc.X.toarray()
-    # Project sc expression matrix onto space
-    X_space = adata_map.X.T @ datamodule.adata_sc.X
-    # Create AnnData object with the projected spatial gene expression
-    adata_ge = sc.AnnData(
-        X=X_space,  # projected sc expression profiles
-        obs=adata_map.var,  # spatial data spot IDs
-        var=datamodule.adata_sc.var,  # all sc gene names
-        uns=datamodule.adata_sc.uns,  # unstructureed fields of sc data 
-    )
-    # Annotate training genes in adata_ge based on spatial data annotation
-    adata_ge.var["is_training"] = adata_ge.var.index.isin(datamodule.adata_st.var.index[datamodule.adata_st.var["is_training"]])
-    
-    return adata_ge
-
-def compare_spatial_gene_exp(adata_ge, datamodule, input_genes=None):
-    """ 
-        Compares generated spatial data with the true spatial data.
-        The main issue that arises when comparing the expression profiles of predicted and true spatial data is that non-expressed
-        genes (i.e. all-zeros), that are excluded from the training genes, cannot be used with the cossim metric directly.
-        To overcome this, non-expressed genes counts are set to an arbitrarily small value 'eps' to avoid zero division errors.
-        The resulting similarity is zero.
-    
-        Args:
-            adata_ge (AnnData): generated spatial data returned by `project_sc_genes_onto_space()`.
-            datamodule (LightningDataModule): LightningDataModule object containing the preprocessed single cell and spatial data (sparsity annotation).
-            genes (list): Optional. When passed, returned output will be subset on the list of genes. Default is None.
-    
-        Returns:
-            Pandas Dataframe: a dataframe with columns: 'score', 'is_training', 'sparsity_st'(spatial data sparsity),
-                'sparsity_sc'(single cell data sparsity), 'sparsity_diff'(spatial sparsity - single cell sparsity).
-    """
-    # Get all overlapping genes (training and not)
-    if input_genes is None:
-        overlap_genes = datamodule.adata_st.uns["overlap_genes"]
-    else:
-        overlap_genes = input_genes
-
-    # Annotate cosine similarity of each overlapping gene
-    cos_sims = []
-    # Predicted spatial expression matrix
-    if hasattr(adata_ge.X, "toarray"):
-        X_pred = adata_ge[:, overlap_genes].X.toarray()
-    else:
-        X_pred = adata_ge[:, overlap_genes].X
-    # True spatial expression matrix
-    if hasattr(datamodule.adata_st.X, "toarray"):
-        X_true = datamodule.adata_st[:, overlap_genes].X.toarray()
-    else:
-        X_true = datamodule.adata_st[:, overlap_genes].X
-    # Compute row-wise cossim
-    eps = 1e-12
-    for v1, v2 in zip(X_pred.T, X_true.T):
-        n1 = np.linalg.norm(v1)
-        n2 = np.linalg.norm(v2)
-        cos_sims.append((v1 @ v2) / max(n1 * n2, eps))
-    # Create gene-score dataframe
-    df_g = pd.DataFrame(cos_sims, overlap_genes, columns=["score"])
-    for adata in [adata_ge, datamodule.adata_st]:
-        if "is_training" in adata.var.keys():
-            df_g["is_training"] = adata.var.is_training
-
-    # Add spatial sparsity - indexes are already aligned
-    df_g["sparsity_st"] = datamodule.adata_st[:, overlap_genes].var.sparsity
-    # Add sc sparsity - inner join indexes
-    df_g = df_g.merge(
-        pd.DataFrame(datamodule.adata_sc[:, overlap_genes].var["sparsity"]),
-        left_index=True,
-        right_index=True,
-    )
-    df_g.rename({"sparsity": "sparsity_sc"}, inplace=True, axis="columns")
-    # Add sparsity difference
-    df_g["sparsity_diff"] = df_g["sparsity_st"] - df_g["sparsity_sc"]
-
-    # Sort scores
-    df_g = df_g.sort_values(by="score", ascending=False)
-
-    return df_g
 
 
 def validate_mapping_experiment(model, datamodule):
@@ -710,3 +629,97 @@ def run_multiple_mappings(
         result.append(filters_square)
 
     return result
+
+
+def project_sc_genes_onto_space(adata_map, datamodule):
+    """
+        Transfer gene expression from the single cell onto space.
+
+        Args:
+            adata_map (AnnData): cells-by-spots anndata object containing the mapping matrix.
+            datamodule (LightningDataModule): LightningDataModule object containing the preprocessed single cell and spatial data.
+                both are returned by map_cells_to_space().
+
+        Returns:
+            AnnData: spot-by-gene AnnData containing spatial gene expression from the single cell data.
+    """
+    # Make sc expression matrix dense
+    if hasattr(datamodule.adata_sc.X, "toarray"):
+        datamodule.adata_sc.X = datamodule.adata_sc.X.toarray()
+    # Project sc expression matrix onto space
+    X_space = adata_map.X.T @ datamodule.adata_sc.X
+    # Create AnnData object with the projected spatial gene expression
+    adata_ge = sc.AnnData(
+        X=X_space,  # projected sc expression profiles
+        obs=adata_map.var,  # spatial data spot IDs
+        var=datamodule.adata_sc.var,  # all sc gene names
+        uns=datamodule.adata_sc.uns,  # unstructured fields of sc data 
+    )
+    # Annotate training genes in adata_ge based on spatial data annotation
+    adata_ge.var["is_training"] = adata_ge.var.index.isin(datamodule.adata_st.var.index[datamodule.adata_st.var["is_training"]])
+    
+    return adata_ge
+
+def compare_spatial_gene_expr(adata_ge, datamodule, input_genes=None):
+    """ 
+        Compares generated spatial data with the true spatial data.
+        NOTE: The main issue that arises when comparing the expression profiles of predicted and true spatial data is that non-expressed
+        genes (i.e. all-zeros), excluded from training genes, cannot be compared with cossim metric.
+        To overcome this, non-expressed genes counts are set to an arbitrarily small value 'eps' to avoid zero division errors.
+        The resulting similarity with the predicted expression is zero, a value possible only in this scenario.
+    
+        Args:
+            adata_ge (AnnData): generated spatial data returned by `project_sc_genes_onto_space()`.
+            datamodule (LightningDataModule): LightningDataModule object containing the preprocessed single cell and spatial data (sparsity annotation).
+            input_genes (list): Optional. When passed, returned output will be subset on the list of genes. Default is None.
+    
+        Returns:
+            df_g (Pandas Dataframe): a dataframe with columns: 'score', 'is_training', 'sparsity_st'(spatial data sparsity),
+                'sparsity_sc'(single cell data sparsity), 'sparsity_diff'(spatial sparsity - single cell sparsity).
+    """
+    # Get all overlapping genes (training and not)
+    overlap_genes = datamodule.adata_st.uns["overlap_genes"]
+    # Intersect with input genes
+    if input_genes:
+        overlap_genes = list(set(input_genes) & set(overlap_genes))
+
+    # Annotate cosine similarity of each overlapping gene
+    cos_sims = []
+    # Predicted spatial expression matrix
+    if hasattr(adata_ge.X, "toarray"):
+        X_pred = adata_ge[:, overlap_genes].X.toarray()
+    else:
+        X_pred = adata_ge[:, overlap_genes].X
+    # True spatial expression matrix
+    if hasattr(datamodule.adata_st.X, "toarray"):
+        X_true = datamodule.adata_st[:, overlap_genes].X.toarray()
+    else:
+        X_true = datamodule.adata_st[:, overlap_genes].X
+    # Compute row-wise cossim
+    eps = 1e-12
+    for v1, v2 in zip(X_pred.T, X_true.T):
+        n1 = np.linalg.norm(v1)
+        n2 = np.linalg.norm(v2)
+        cos_sims.append((v1 @ v2) / max(n1 * n2, eps))
+    # Create gene-score dataframe
+    df_g = pd.DataFrame(cos_sims, overlap_genes, columns=["score"])
+    for adata in [adata_ge, datamodule.adata_st]:
+        if "is_training" in adata.var.keys():
+            df_g["is_training"] = adata.var.is_training
+
+    # Add spatial sparsity - indexes are already aligned
+    df_g["sparsity_st"] = datamodule.adata_st[:, overlap_genes].var.sparsity
+    # Add sc sparsity - inner join indexes
+    df_g = df_g.merge(
+        pd.DataFrame(datamodule.adata_sc[:, overlap_genes].var["sparsity"]),
+        left_index=True,
+        right_index=True,
+    )
+    df_g.rename({"sparsity": "sparsity_sc"}, inplace=True, axis="columns")
+    # Add sparsity difference
+    df_g["sparsity_diff"] = df_g["sparsity_st"] - df_g["sparsity_sc"]
+
+    # Sort scores
+    df_g = df_g.sort_values(by="score", ascending=False)
+
+    return df_g

@@ -70,8 +70,10 @@ class MapperLightning(pl.LightningModule):
         self.save_hyperparameters()
 
         # Allocate fields for setup() attributes
-        self.M = None # parameter
-        self.F = None  # parameter (optional)
+        # NOTE: Parameters must be allocated in __init__ to load model from checkpoint
+        self.M = nn.Parameter(torch.empty(0), requires_grad=True)  # parameter
+        if self.hparams.filter:
+            self.F = nn.Parameter(torch.empty(0), requires_grad=True)  # parameter (optional)
         self.d_prior = None  # density prior
         self.getis_ord_G_star_ref = None  # LISA
         self.moran_I_ref = None
@@ -127,9 +129,9 @@ class MapperLightning(pl.LightningModule):
             # Get spatial graph from batch
             graph_conn, graph_dist = batch['spatial_graph_conn'], batch['spatial_graph_dist']
 
-            # Get single cell annotation OHE and register buffer
+            # Get single cell annotation OHE and register buffer (no state dict)
             ct_encode = batch['A']
-            self.register_buffer("ct_encode", ct_encode)
+            self.register_buffer("ct_encode", ct_encode, persistent=False)
 
             # Set random seed if specified
             if self.hparams.random_state is not None:
@@ -137,19 +139,18 @@ class MapperLightning(pl.LightningModule):
                 random.seed(self.hparams.random_state)
                 np.random.seed(self.hparams.random_state)
 
-            # Initialize mapping matrix M
-            self.M = nn.Parameter(torch.randn(n_cells, n_spots))
+            # Initialize mapping matrix M (nn.Parameter.data)
+            self.M.data = torch.randn(n_cells, n_spots)
 
             # Initialize filter F
             if self.hparams.filter:
-                self.F = nn.Parameter(torch.randn(n_cells))
+                self.F.data = torch.randn(n_cells)
                 # To test uniform init: nn.Parameter(torch.ones(n_cells) / n_cells)
 
             # Define uniform density prior
             self.d_prior = torch.ones(n_spots) / n_spots
 
             # Spatial weights
-            voxel_weights = neighborhood_filter = spatial_weights_morangeary = spatial_weights_getisord = None
             # Mapping: (condition, buffer name, kwargs for compute_spatial_weights)
             buffer_map = [
                 (self.hparams.lambda_neighborhood_g1 > 0, "voxel_weights", dict(standardized=True, self_inclusion=True)),
@@ -157,11 +158,11 @@ class MapperLightning(pl.LightningModule):
                 (self.hparams.lambda_moran > 0 or self.hparams.lambda_geary > 0, "spatial_weights_morangeary", dict(standardized=True, self_inclusion=False)),
                 (self.hparams.lambda_getis_ord > 0, "spatial_weights_getisord", dict(standardized=False, self_inclusion=True)),
             ]
-            # Compute and register buffers (loaded in state dict)
+            # Compute and register buffers (not loaded in state dict)
             for cond, name, kwargs in buffer_map:
                 if cond:
                     tensor = self._compute_spatial_weights(graph_conn, graph_dist, **kwargs)
-                    self.register_buffer(name, tensor)
+                    self.register_buffer(name, tensor, persistent=False)
 
             # Compute LISA on ground truth (reference values)
             self.getis_ord_G_star_ref, self.moran_I_ref, self.gearys_C_ref = self._spatial_local_indicators(G)

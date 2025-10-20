@@ -103,7 +103,7 @@ class MapperLightning(pl.LightningModule):
         if self.hparams.filter:
             self.loss_history.update({
                 'count_reg': [],
-                'lambda_f_reg': [],
+                'filt_reg': [],
             })
             self.filter_history = {
                 'filter_values': [],  # filter values per epoch
@@ -385,7 +385,7 @@ class MapperLightning(pl.LightningModule):
         if self.hparams.filter:
             filter_terms = {
                 "count_reg": count_term if self.hparams.lambda_count > 0 else None,
-                "lambda_f_reg": f_reg if self.hparams.lambda_f_reg > 0 else None,
+                "filt_reg": f_reg if self.hparams.lambda_f_reg > 0 else None,
             }
             step_output.update(filter_terms)
             # Filter history values

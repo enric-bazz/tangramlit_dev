@@ -70,10 +70,11 @@ class MapperLightning(pl.LightningModule):
         self.save_hyperparameters()
 
         # Allocate fields for setup() attributes
-        # NOTE: Parameters must be allocated in __init__ to load model from checkpoint
-        self.M = nn.Parameter(torch.empty(0), requires_grad=True)  # parameter
+        self.M = None
+        # self.M = nn.Parameter(torch.empty(0), requires_grad=True)  # to pre-allocate parameter
         if self.hparams.filter:
-            self.F = nn.Parameter(torch.empty(0), requires_grad=True)  # parameter (optional)
+            self.F = None
+            # self.F = nn.Parameter(torch.empty(0), requires_grad=True)  # to pre-allocate parameter
         self.d_prior = None  # density prior
         self.getis_ord_G_star_ref = None  # LISA
         self.moran_I_ref = None
@@ -140,11 +141,11 @@ class MapperLightning(pl.LightningModule):
                 np.random.seed(self.hparams.random_state)
 
             # Initialize mapping matrix M (nn.Parameter.data)
-            self.M.data = torch.randn(n_cells, n_spots)
+            self.M = nn.Parameter(torch.randn(n_cells, n_spots))
 
             # Initialize filter F
             if self.hparams.filter:
-                self.F.data = torch.randn(n_cells)
+                self.F = nn.Parameter(torch.randn(n_cells))
                 # To test uniform init: nn.Parameter(torch.ones(n_cells) / n_cells)
 
             # Define uniform density prior
@@ -536,7 +537,8 @@ class MapperLightning(pl.LightningModule):
             print(f"S matrix shape: {batch['S'].shape}")
             print(f"G matrix shape: {batch['G'].shape}")
 
-#TODO: return both aggregated metric and gene-specific values during training and validation
+# TODO: return both aggregated and gene-specific metrics during training and validation
+# TODO: work with on_load_checkpoint, on_save_checkpoin methods to handle checkpoints
 
 
 """

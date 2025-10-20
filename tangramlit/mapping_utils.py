@@ -335,7 +335,7 @@ def map_cells_to_space(
     if model.hparams.filter:
         filter_terms = {
             'count_reg': model.loss_history['count_reg'],
-            'lambda_f_reg': model.loss_history['lambda_f_reg']
+            'filt_reg': model.loss_history['filt_reg']
         }
         training_history.update(filter_terms)
         # Include filter training history logs

@@ -100,6 +100,7 @@ def validate_mapping_inputs(
         if not target_count:
             target_count = adata_st.shape[0]
             logging.info(f"target_count missing from input is set to adata_st.shape[0] = {target_count}")
+            # TODO: if spots are eliminated in preprocessing this set does not match anymore
 
     # CT islands enforcement
     if lambda_ct_islands > 0:

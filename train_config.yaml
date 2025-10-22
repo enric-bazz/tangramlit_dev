@@ -1,5 +1,5 @@
 cluster_label: 'Allen.class_label'
-lambda_count: 1.0e-03
+lambda_count: 1.0e-05
 lambda_ct_islands: 1
 lambda_d: 1.0e-3
 lambda_f_reg: 1.0e-05
@@ -17,4 +17,4 @@ learning_rate: 0.1
 filter: False
 num_epochs: 1000
 random_state: 42
-target_count: None
+target_count: null

@@ -108,16 +108,16 @@ def validate_mapping_inputs(
             raise ValueError(
                 "cluster_label must be specified and in `adata_sc.obs.keys()` to use the cell type island loss term."
             )
-    # Check for missing values in cluster_label
-    n_invalid = adata_sc.obs[cluster_label].isna().sum()
-    if n_invalid > 0:        
-        # Get boolean mask of valid cells
-        valid_cells = ~adata_sc.obs[cluster_label].isna()
-                
-        logging.warning(f"Found {n_invalid} cells in adata_sc with NaN `cluster_label` annotations. These cells will be removed.")
+        # Check for missing values in cluster_label
+        n_invalid = adata_sc.obs[cluster_label].isna().sum()
+        if n_invalid > 0:        
+            # Get boolean mask of valid cells
+            valid_cells = ~adata_sc.obs[cluster_label].isna()
+                    
+            logging.warning(f"Found {n_invalid} cells in adata_sc with NaN `cluster_label` annotations. These cells will be removed.")
 
-        # Remove cellss with NaN labels
-        adata_sc._inplace_subset_obs(valid_cells)
+            # Remove cellss with NaN labels
+            adata_sc._inplace_subset_obs(valid_cells)
 
     # Check spatial coordinates
     if 'spatial' not in adata_st.obsm.keys():
@@ -255,8 +255,8 @@ def map_cells_to_space(
         filename='{epoch}-{val_score:.3f}',
         monitor="val_score",
         verbose=True,
-        save_last=True,  # save last checkpoint separated from top k
-        save_top_k=3,  # top k models out of all checkpoints
+        save_last=False,  # save last checkpoint separated from top k
+        save_top_k=0,  # top k models out of all checkpoints
         mode="max",  # update with higher scores
         auto_insert_metric_name=True,
         save_weights_only=True,  # set = False to store optimizer, scheduler states

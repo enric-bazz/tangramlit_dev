@@ -28,3 +28,6 @@ checkpoints/
 
 # Results folder
 results/
+
+# Cache folders
+cache/

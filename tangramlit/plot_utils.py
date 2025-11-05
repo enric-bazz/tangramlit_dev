@@ -8,7 +8,7 @@ from matplotlib.patches import Patch
 from . import validation_metrics as vm
 
 
-def plot_training_history(adata_map, hyperpams=None, lambda_scale=True, log_scale=False):
+def plot_training_history(adata_map, hyperpams=None, lambda_scale=True, log_scale=False, show_total_loss=False):
     """
         Plots a panel with all loss term curves in training.
 
@@ -17,6 +17,7 @@ def plot_training_history(adata_map, hyperpams=None, lambda_scale=True, log_scal
             hyperpams (dict): dictionary containing the hyperparameters used for the mapping
             lambda_scale (bool): Whether to scale the loss terms by lambda (default: True)
             log_scale (bool): Whether the y axis plots should be in log-scale (default: False)
+            show_total_loss (bool): Whether to show the total loss term named 'loss' (default: False)
 
         Returns:
             Note that the trainig step stores in adata_map.uns["training_history"] the loss terms for each epoch already scaled
@@ -69,6 +70,11 @@ def plot_training_history(adata_map, hyperpams=None, lambda_scale=True, log_scal
         for loss_key in (loss_dict.keys() & loss_lambda_map.keys()):
             #if loss_dict[loss_key].any():  # truthy keys only
             loss_dict[loss_key] = loss_dict[loss_key] / hyperpams[loss_lambda_map[loss_key]]
+
+    # Optionally hide the total loss term named 'loss'
+    if not show_total_loss and 'loss' in loss_dict:
+        # remove from dict so it's not plotted below
+        loss_dict.pop('loss', None)
 
     # Create plot
     plt.figure(figsize=(10,20))
@@ -441,33 +447,85 @@ def plot_training_scores(df_g, bins=10, alpha=0.7):
     plt.tight_layout()
     plt.show()
 
-def plot_auc_curve(df_g, test_genes=None):
+def plot_auc_curve(df_g, test_genes=None, plot_train=False, plot_test=True):
     """
         Plots auc curve of non-training genes score. Test genes are either input or deduced from df_g['is_training'].
 
         Args:
             df_g (pandas.DataFrame): returned by compare_spatial_gene_expr(adata_ge, adata_sp).
-            test_genes (list): list of test genes, if not given, test_genes will be set to genes where 'is_training' field is False.
+            test_genes (list): list of genes to restrict plot to (keeps behavior compatible with previous API).
+            plot_train (bool): if True, include genes flagged as training (df_g['is_training'] == True).
+            plot_test (bool): if True, include genes flagged as NOT training (df_g['is_training'] == False). Default True.
 
         Returns:
             None
         """
-    if test_genes:
-        df_g = df_g[test_genes]
+    # Restrict to provided gene list if given
+    if test_genes is not None:
+        # prefer .loc with gene labels; if that fails, fall back to membership
+        try:
+            df_sel = df_g.loc[test_genes].copy()
+        except Exception:
+            df_sel = df_g[df_g.index.isin(test_genes)].copy()
     else:
-        df_g = df_g.loc[~df_g['is_training']]
-        df_g = df_g.loc[df_g['score'] != 0]  # remove 0-score genes
+        df_sel = df_g.copy()
 
-    # If any test genes have score = 0 --> linalg does not converge
-    if (df_g['score'] == 0).any():
-        raise ValueError('Test genes have null score, CosSim not computable.')
+    # Decide which groups to plot
+    if not plot_train and not plot_test:
+        raise ValueError('At least one of plot_train or plot_test must be True.')
 
-    auc_score, ((pol_xs, pol_ys), (xs, ys)) = vm.poly2_auc(df_g['score'], df_g['sparsity_st'], plot_auc=False)
+    def prepare_group(df, training_flag):
+        grp = df.loc[df['is_training'] == training_flag].copy()
+        # remove zero-score entries (poly fit / auc routine requires non-zero scores)
+        grp = grp.loc[grp['score'] != 0]
+        return grp
 
     plt.figure(figsize=(6, 5))
 
-    plt.plot(pol_xs, pol_ys, c='r')
-    sns.scatterplot(x=xs, y=ys, alpha=0.5, edgecolors='face')
+    # Single-group: only test (default) or only train
+    if plot_test and not plot_train:
+        grp = prepare_group(df_sel, False)
+        if grp.empty:
+            raise ValueError('No test genes with non-null score, CosSim not computable.')
+        auc_score, ((pol_xs, pol_ys), (xs, ys)) = vm.poly2_auc(grp['score'], grp['sparsity_st'], plot_auc=False)
+
+        plt.plot(pol_xs, pol_ys, c='r', label=f'Test poly (auc={auc_score:.3f})')
+        sns.scatterplot(x=xs, y=ys, alpha=0.5, edgecolors='face', color='red', label='Test')
+
+        plt.title('Prediction on test transcriptome')
+        textstr = 'test_auc={}'.format(np.round(auc_score, 3))
+
+    elif plot_train and not plot_test:
+        grp = prepare_group(df_sel, True)
+        if grp.empty:
+            raise ValueError('No training genes with non-null score, CosSim not computable.')
+        auc_score, ((pol_xs, pol_ys), (xs, ys)) = vm.poly2_auc(grp['score'], grp['sparsity_st'], plot_auc=False)
+
+        plt.plot(pol_xs, pol_ys, c='b', label=f'Train poly (auc={auc_score:.3f})')
+        sns.scatterplot(x=xs, y=ys, alpha=0.5, edgecolors='face', color='blue', label='Train')
+
+        plt.title('Prediction on training transcriptome')
+        textstr = 'train_auc={}'.format(np.round(auc_score, 3))
+
+    else:
+        # Both groups: color points by is_training and fit two polynomials
+        grp_train = prepare_group(df_sel, True)
+        grp_test = prepare_group(df_sel, False)
+        if grp_train.empty or grp_test.empty:
+            raise ValueError('Both training and test groups must contain genes with non-null scores for combined plotting.')
+
+        auc_train, ((pol_x_tr, pol_y_tr), (xs_tr, ys_tr)) = vm.poly2_auc(grp_train['score'], grp_train['sparsity_st'], plot_auc=False)
+        auc_test, ((pol_x_te, pol_y_te), (xs_te, ys_te)) = vm.poly2_auc(grp_test['score'], grp_test['sparsity_st'], plot_auc=False)
+
+        # plot polynomial fits
+        plt.plot(pol_x_tr, pol_y_tr, c='b', label=f'Train poly (auc={auc_train:.3f})')
+        plt.plot(pol_x_te, pol_y_te, c='r', label=f'Test poly (auc={auc_test:.3f})')
+
+        # plot points
+        sns.scatterplot(x=xs_tr, y=ys_tr, alpha=0.6, edgecolors='face', color='blue', label='Training')
+        sns.scatterplot(x=xs_te, y=ys_te, alpha=0.6, edgecolors='face', color='red', label='Test')
+
+        textstr = 'train_auc={0}\ntest_auc={1}'.format(np.round(auc_train, 3), np.round(auc_test, 3))
 
     plt.xlim([0.0, 1.0])
     plt.ylim([0.0, 1.0])
@@ -475,12 +533,9 @@ def plot_auc_curve(df_g, test_genes=None):
     plt.xlabel('score')
     plt.ylabel('spatial sparsity')
     plt.tick_params(axis='both', labelsize=8)
-    plt.title('Prediction on test transcriptome')
+    plt.legend()
 
-    textstr = 'auc_score={}'.format(np.round(auc_score, 3))
     props = dict(boxstyle='round', facecolor='wheat', alpha=0.3)
     # place a text box in upper left in axes coords
     plt.text(0.03, 0.1, textstr, fontsize=11, verticalalignment='top', bbox=props)
     plt.show()
-
-    # TODO: a bit redundant with validation_metrics.poly2_auc()

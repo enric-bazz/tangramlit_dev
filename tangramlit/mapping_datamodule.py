@@ -4,7 +4,7 @@ import numpy as np
 import scanpy as sc
 import squidpy as sq
 import torch
-from pytorch_lightning import LightningDataModule
+from lightning.pytorch import LightningDataModule
 from scipy.sparse import csc_matrix, csr_matrix
 from torch.utils.data import Dataset, DataLoader
 
@@ -84,8 +84,8 @@ class MyDataModule(LightningDataModule):
 
         # 5. Filter all-zero-valued genes and get filtered overlap (candidate training genes)
         # scanpy.pp.filter_genes() returns tuple containing: (a boolean array indicating which genes were filtered out, the number of cells per gene)
-        filtered_genes_sc, _ = sc.pp.filter_genes(self.adata_sc, min_cells=1, inplace=False)  # skip n_cells
-        filtered_genes_st, _ = sc.pp.filter_genes(self.adata_st, min_cells=1, inplace=False)  # skip n_cells
+        filtered_genes_sc, _ = sc.pp.filter_genes(self.adata_sc, min_cells=1, inplace=False)  # skip n_cells output
+        filtered_genes_st, _ = sc.pp.filter_genes(self.adata_st, min_cells=1, inplace=False)  # skip n_cells output
         # Get gene names by masking the adata with boolean arrays
         filtered_genes_sc = self.adata_sc[:, filtered_genes_sc].var_names
         filtered_genes_st = self.adata_st[:, filtered_genes_st].var_names

@@ -1,12 +1,12 @@
 import random
 import numpy as np
 import sklearn
-import pytorch_lightning as pl
+import lightning.pytorch as lp
 import torch
 import torch.nn as nn
 from torch.nn.functional import softmax, cosine_similarity
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from pytorch_lightning.callbacks import ProgressBar
+from lightning.pytorch.callbacks import ProgressBar
 from tqdm import tqdm
 
 from . import validation_metrics as vm
@@ -16,7 +16,7 @@ from . import utils as ut
 Lightning module for Tangram
 """
 
-class MapperLightning(pl.LightningModule):
+class MapperLightning(lp.LightningModule):
     def __init__(
             self,
             filter=False,
@@ -398,7 +398,7 @@ class MapperLightning(pl.LightningModule):
 
         return step_output
 
-    def on_train_epoch_end(self, N=100):
+    def on_train_epoch_end(self, N=100, verbose=False):
         """
             Handle training history tracking, logging and displaying.
 
@@ -419,7 +419,8 @@ class MapperLightning(pl.LightningModule):
                 k: v.item() if torch.is_tensor(v) else v
                 for k, v in self.trainer.logged_metrics.items()  # logged_metrics: metrics logged via log() with the logger argument set
             }
-            print(f"Epoch {self.current_epoch}: {losses}")
+            if verbose:
+                print(f"Epoch {self.current_epoch}: {losses}")
 
         # Track learning rate scheduling
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
@@ -516,7 +517,7 @@ class MapperLightning(pl.LightningModule):
             # Log on validation logger
             self.log_dict(val_dict, prog_bar=False, logger=True, on_epoch=True)
 
-    def on_validation_epoch_end(self):
+    def on_validation_epoch_end(self, verbose=False):
         """
             Print validation terms at the end of each validation epoch during training.
         """
@@ -525,7 +526,8 @@ class MapperLightning(pl.LightningModule):
                 k: v.item() if torch.is_tensor(v) else v
                 for k, v in self.trainer.progress_bar_metrics.items()
             }
-            print(f"\nValidation {self.current_epoch}: {losses}")
+            if verbose:
+                print(f"\nValidation {self.current_epoch}: {losses}")
 
     def on_validation_start(self):
         """

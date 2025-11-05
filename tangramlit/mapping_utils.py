@@ -4,8 +4,9 @@ Mapping functions for Tangram using the Lightning framework.
 import pandas as pd
 import sklearn
 from anndata import AnnData
-from pytorch_lightning.callbacks import EarlyStopping
-from pytorch_lightning.loggers import TensorBoardLogger
+import lightning.pytorch as lp
+from lightning.pytorch.callbacks import EarlyStopping
+from lightning.pytorch.loggers import TensorBoardLogger
 from sklearn.model_selection import KFold
 
 from . import utils as ut
@@ -57,8 +58,8 @@ def validate_mapping_inputs(
     """
 
     # Check invalid values for arguments
-    if not lambda_g1 > 0:
-        raise ValueError("lambda_g1 cannot be 0.")
+    if lambda_g1 + lambda_sparsity_g1 == 0:
+        raise ValueError("Either one of lambda_g1 or lambda_sparsity_g1 must be > 0.")
 
     # Validate anndata objects
     if not isinstance(adata_sc, AnnData) or not isinstance(adata_st, AnnData):
@@ -91,22 +92,11 @@ def validate_mapping_inputs(
     ):
         raise ValueError("random_state must be an int, None, or a random number generator")
 
-    # Filter inputs
-    if filter:
-        if not all([lambda_f_reg, lambda_count]):
-            raise ValueError(
-                "lambda_f_reg and lambda_count must be specified if cell filter is active."
-            )
-        if not target_count:
-            target_count = adata_st.shape[0]
-            logging.info(f"target_count missing from input is set to adata_st.shape[0] = {target_count}")
-            # TODO: if spots are eliminated in preprocessing this set does not match anymore
-
     # CT islands enforcement
     if lambda_ct_islands > 0:
         if cluster_label is None or cluster_label not in adata_sc.obs.keys():
             raise ValueError(
-                "cluster_label must be specified and in `adata_sc.obs.keys()` to use the cell type island loss term."
+                "cluster_label must be specified and in `adata_sc.obs.keys()` to use the cell type islands loss term."
             )
         # Check for missing values in cluster_label
         n_invalid = adata_sc.obs[cluster_label].isna().sum()
@@ -121,7 +111,7 @@ def validate_mapping_inputs(
 
     # Check spatial coordinates
     if 'spatial' not in adata_st.obsm.keys():
-        raise ValueError("'spatial' key is missing in adata_st.obsm.")
+        raise ValueError("'spatial' key is missing in `adata_st.obsm`.")
         
     # Check for NaN values in spatial coordinates (squidpy graph does not work otherwise)
     if np.any(np.isnan(adata_st.obsm['spatial'])):
@@ -133,6 +123,16 @@ def validate_mapping_inputs(
         
         # Remove spots with NaN coordinates
         adata_st._inplace_subset_obs(valid_spots)
+
+    # Filter inputs
+    if filter:
+        if not all([lambda_f_reg, lambda_count]):
+            raise ValueError(
+                "lambda_f_reg and lambda_count must be specified if cell filter is active."
+            )
+        if not target_count:
+            target_count = adata_st.shape[0]  # after spot removal
+            logging.info(f"target_count missing from input is set to adata_st.shape[0] = {target_count}.")
 
     # Create hyperparameters dictionary for all next calls
     hyperparameters = {}
@@ -196,7 +196,7 @@ def map_cells_to_space(
         cluster_label=None,
 ):
     """
-    Map single cell data (`adata_sc`) on spatial data (`adata_sp`).
+    Map single cell data (`adata_sc`) on spatial data (`adata_st`).
 
     Args:
         adata_sc (AnnData): single cell data
@@ -250,7 +250,7 @@ def map_cells_to_space(
                         )
 
     # Customize ModelCheckpoint callback to avoid memory blow-up
-    checkpoint_callback = pl.callbacks.ModelCheckpoint(
+    checkpoint_callback = lp.callbacks.ModelCheckpoint(
         dirpath="checkpoints/",
         filename='{epoch}-{val_score:.3f}',
         monitor="val_score",
@@ -278,7 +278,7 @@ def map_cells_to_space(
     train_logger = TensorBoardLogger("tb_logs", name="train")
 
     # Initialize trainer
-    trainer = pl.Trainer(
+    trainer = lp.Trainer(
         logger=train_logger,
         callbacks=[EpochProgressBar(), early_stop, checkpoint_callback],
         max_epochs=num_epochs,
@@ -361,7 +361,7 @@ def validate_mapping_experiment(model, datamodule):
         element results[0] containing the dictionary.
     """
     val_logger = TensorBoardLogger("tb_logs", name="val")
-    trainer = pl.Trainer(
+    trainer = lp.Trainer(
         logger=val_logger,
         enable_progress_bar=False,  # disable progress bar
         num_sanity_val_steps=0,  # skip sanity check
@@ -369,6 +369,38 @@ def validate_mapping_experiment(model, datamodule):
     validation_results = trainer.validate(model=model, datamodule=datamodule)
 
     return validation_results
+
+
+def split_train_val_genes(adata_sc, adata_st, train_ratio=0.8, random_state=None):
+    """
+    Split genes into training and validation sets. Run before map_cells_to_space() and validate_mapping_experiment().
+
+    Args:
+        adata_sc (AnnData): Single-cell AnnData object.
+        adata_st (AnnData): Spatial AnnData object.
+        train_ratio (float): Proportion of genes to use for training. Default is 0.8.
+        random_state (int): Random seed for reproducibility. Default is None.
+
+    Returns:
+        train_genes (list): List of training gene names.
+        val_genes (list): List of validation gene names.
+    """
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    # Set gene names to lowercase for case-insensitive matching
+    sc_genes = {gene.lower(): gene for gene in adata_sc.var.index}
+    st_genes = {gene.lower(): gene for gene in adata_st.var.index}
+
+    # Get shared genes
+    shared_genes = set(sc_genes.keys()) & set(st_genes.keys())
+
+    # Split genes into training and validation sets
+    train_genes = np.random.choice(list(shared_genes), size=int(len(shared_genes) * train_ratio), replace=False)
+    val_genes = list(shared_genes - set(train_genes))
+
+    return train_genes, val_genes
+
 
 def get_cv_data(genes_list, k=10):
     """
@@ -513,8 +545,6 @@ def cross_validate_mapping(
 
     return cv_metrics
 
-# TODO: refactor so that validation genes can be absent from the spatial data (not a subset of shared genes but only of adata_sc genes)
-
 def run_multiple_mappings(
     adata_sc,
     adata_st,
@@ -586,7 +616,7 @@ def run_multiple_mappings(
         #config['random_state'] = config['random_state'] + run if 'random_state' in config else [run,]
 
         # Initialize trainer here (otherwise after 1 run max_epochs is reached already)
-        trainer = pl.Trainer(
+        trainer = lp.Trainer(
             max_epochs=config['num_epochs'],
             logger=False,
             enable_checkpointing=False,

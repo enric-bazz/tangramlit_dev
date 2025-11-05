@@ -299,6 +299,47 @@ def plot_filter_count(adata_map, target_count=None, threshold=0.5, figsize=(10, 
     ax.legend()
     plt.show()
 
+def plot_validation_metrics_history(adata_map, figsize=(10, 5), add_training_scores=False):
+    """
+    Plots the history of validation metrics stored in adata_map.uns['validation_history'] in separated plots.
+    Optionally compare training score and sparsity-weighted score with the validation ones if add_training_scores is True.
+
+    Args:
+        adata_map: anndata object returned by the mapping containing the validation history
+        figsize: tuple specifying the figure size
+    """
+    if 'validation_history' not in adata_map.uns:
+        raise ValueError("Missing 'validation_history' in adata_map.uns.")
+
+    val_history = adata_map.uns['validation_history']
+    metrics = val_history.keys()
+    epochs = range(0, len(next(iter(val_history.values()))))
+
+    for metric in metrics:
+        plt.figure(figsize=figsize)
+        if add_training_scores and metric == 'val_score':
+            # Plot both training and validation scores
+            plt.plot(epochs, adata_map.uns['training_history']['main_loss'], '-o', label='Training Score')
+            plt.plot(epochs, val_history[metric], '-o', label='Validation Score')
+            plt.ylabel('Score')
+            plt.title('Training vs Validation Score over epochs')
+        elif add_training_scores and metric == 'val_sparsity-weighted_score':
+            # Plot both training and validation sparsity-weighted scores
+            plt.plot(epochs, adata_map.uns['training_history']['sparsity_term'], '-o', label='Training Sparsity-Weighted Score')
+            plt.plot(epochs, val_history[metric], '-o', label='Validation Sparsity-Weighted Score')
+            plt.ylabel('Sparsity-Weighted Score')
+            plt.title('Training vs Validation Sparsity-Weighted Score over epochs')
+        else:
+            plt.plot(epochs, val_history[metric], '-o')
+            plt.ylabel(metric)
+            plt.title(f'Validation {metric} over epochs')
+
+        plt.xlabel('Epoch')
+        plt.grid(True)
+        plt.legend()
+        plt.show()
+
+
 
 def traffic_light_plot(genes_list, values_sc=None, values_sp=None, figsize=(10, 10)):
     """

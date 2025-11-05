@@ -28,7 +28,7 @@ def train_mapper(data, config):
     ad_ge = tgl.project_sc_genes_onto_space(adata_map, datamodule)
     df = tgl.compare_spatial_gene_expr(ad_ge, datamodule)
     tgl.plot_training_scores(df)
-    # tgl.plot_auc_curve(df)  # works only with validation genes
+    tgl.plot_auc_curve(df, plot_train=True, plot_test=True)  # works only with validation genes
 
     # Plot loss terms
     tgl.plot_training_history(adata_map=adata_map, hyperpams=mapper.hparams, log_scale=False, lambda_scale=True)
@@ -36,6 +36,8 @@ def train_mapper(data, config):
     tgl.plot_loss_terms(adata_map=adata_map, loss_key=['count_reg', 'main_loss', 'ct_island_term'], lambda_coeff=[1.0e-3, 1, 1])
     tgl.plot_loss_terms(adata_map=adata_map, loss_key=['count_reg', 'main_loss', 'ct_island_term'], lambda_coeff=[1.0e-3, 1, 1],
                                                        lambda_scale=True, make_subplot=True, subplot_shape=(1,3))
+    
+    tgl.plot_validation_metrics_history(adata_map=adata_map, add_training_scores=True)
 
     # Plot final filter values distribution
     if config["filter"]:
@@ -111,7 +113,11 @@ def train_validate_mapper(data, config, random_state=None):
     ad_ge = tgl.project_sc_genes_onto_space(adata_map, datamodule)
     df = tgl.compare_spatial_gene_expr(ad_ge, datamodule)
     tgl.plot_training_scores(df)
-    tgl.plot_auc_curve(df)
+    tgl.plot_auc_curve(df, plot_train=True, plot_test=True)  # works only with validation genes
+    results = []
+
+    tgl.plot_validation_metrics_history(adata_map=adata_map, add_training_scores=True)
+
 
     return [adata_map, train_genes, val_genes, results], shared_genes, mapper, datamodule
 
@@ -131,17 +137,17 @@ def cv_mapper_genes(data, config, genes_list):
 
 def main():
 
-    path = "/nfsd/sysbiobig/bazzaccoen/tangramlit_dev/data"
-    # path = "C:/Users/enric/tangram/myDataCropped"
+    # path = "/nfsd/sysbiobig/bazzaccoen/tangramlit_dev/data"
+    path = "C:/Users/enric/tangram/myDataCropped"
 
     data = data_loading(path)
 
     with open("train_config.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-    train_mapper(data, config)
+    # train_mapper(data, config)
 
-    # _ , shared_genes, mapper, datamodule = train_validate_mapper(data, config)
+    _ , shared_genes, mapper, datamodule = train_validate_mapper(data, config)
 
     # cv_mapper_genes(data, config, genes_list=shared_genes)
     

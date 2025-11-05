@@ -111,6 +111,13 @@ class MapperLightning(lp.LightningModule):
                 'n_cells': []  # number of cells that pass the filter per epoch
             }
 
+        # Create validation history dictionary
+        self.val_history = {
+            'val_score': [],
+            'val_sparsity-weighted_score': [],
+            'val_AUC': [],
+            'val_entropy': [],
+        }
 
     def setup(self, stage=None):
         """
@@ -528,6 +535,11 @@ class MapperLightning(lp.LightningModule):
             }
             if verbose:
                 print(f"\nValidation {self.current_epoch}: {losses}")
+            for key, value in losses.items():
+                if key not in self.val_history:
+                    self.val_history[key] = []
+                if not self.trainer.sanity_checking:
+                    self.val_history[key].append(value)
 
     def on_validation_start(self):
         """

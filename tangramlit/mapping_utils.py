@@ -285,7 +285,7 @@ def map_cells_to_space(
         log_every_n_steps=1,  # log every training step == epoch
         enable_checkpointing=True,
         enable_progress_bar=True,
-        check_val_every_n_epoch=50,  # validation loop after every N training epochs
+        check_val_every_n_epoch=1,  # validation loop after every N training epochs
     )
 
     # Train the model
@@ -316,6 +316,7 @@ def map_cells_to_space(
     # Store final filter values in adata_map.obs['F_out']
     if filter:
         adata_map.obs["F_out"] = final_filter
+    
     # Create training history dictionary
     training_history = {
         'total_loss': model.loss_history['loss'],
@@ -346,6 +347,9 @@ def map_cells_to_space(
         }
     # Store training history in adata_map.uns['training_history']
     adata_map.uns['training_history'] = training_history
+
+    # Store validation history in adata_map.uns['validation_history']
+    adata_map.uns['validation_history'] = model.val_history
 
     return adata_map, model, data
 

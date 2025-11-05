@@ -12,22 +12,17 @@ myvenv
 .venv/
 myvenv/
 
-# Data folder
-data/
-
-# VScode cofing
+# VScode config
 .vscode
 .vscode/
 
-# TensorBoard logs
+# Data, results and cache files
+data/
+results/
+cache/
+
+# TensorBoard logs, Lightning logs, checkpoints, etc.
 tb_logs
 tb_logs/
-
-# Lightninh checkpoints
+lightning_logs/
 checkpoints/
-
-# Results folder
-results/
-
-# Cache folders
-cache/

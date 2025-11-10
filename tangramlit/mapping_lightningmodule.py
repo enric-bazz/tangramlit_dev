@@ -61,8 +61,7 @@ class MapperLightning(lp.LightningModule):
             lambda_getis_ord (float): Optional. Strength of Getis-Ord G* preservation. Default is 0.
             lambda_geary (float): Optional. Strength of Geary's C preservation. Default is 0.
             lambda_moran (float): Optional. Strength of Moran's I preservation. Default is 0.
-            lambda_ct_islands: Optional. Strength of ct islands enforcement. Default is 0.
-            lambda_ct_islands: Optional. Strength of ct islands enforcement. Default is 0.
+            lambda_ct_islands (float): Optional. Strength of ct islands enforcement. Default is 0.
         """
 
         super().__init__()
@@ -343,7 +342,10 @@ class MapperLightning(lp.LightningModule):
 
         # Cell type island enforcement
         if self.hparams.lambda_ct_islands > 0:
-            ct_map = (M_probs.T @ self.ct_encode)
+            if filter:
+                ct_map = (M_probs_filtered.T @ self.ct_encode)
+            else:
+                ct_map = (M_probs.T @ self.ct_encode)
             ct_island_term = self.hparams.lambda_ct_islands * (torch.max((ct_map) - (self.neighborhood_filter @ ct_map),
                                                                     torch.tensor([0], dtype=torch.float32)).mean())
         else:
@@ -429,9 +431,9 @@ class MapperLightning(lp.LightningModule):
             if verbose:
                 print(f"Epoch {self.current_epoch}: {losses}")
 
-        # Track learning rate scheduling
-        lr = self.trainer.optimizers[0].param_groups[0]["lr"]
-        self.log("lr", lr, prog_bar=False)
+        # Track learning rate scheduling (use lightning.pytorch.callbacks.LearningRateMonitor instead)
+        # lr = self.trainer.optimizers[0].param_groups[0]["lr"]
+        # self.log("lr", lr, prog_bar=False)
 
 
     def configure_optimizers(self):
@@ -502,7 +504,7 @@ class MapperLightning(lp.LightningModule):
         prob_entropy = - torch.mean(torch.sum((torch.log(M_probs) * M_probs), dim=1) / np.log(M_probs.shape[1]))
         # Validation dictionary
         val_dict = {'val_score': gv_scores.mean(),
-                    'val_sparsity-weighted_score': sp_sparsity_weighted_scores.mean(),
+                    'val_sparsity-weighted_score': sp_sparsity_weighted_scores.sum(),
                     'val_AUC': auc_score,
                     'val_entropy': prob_entropy}
 

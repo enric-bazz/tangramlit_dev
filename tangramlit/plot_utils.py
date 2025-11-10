@@ -71,10 +71,10 @@ def plot_training_history(adata_map, hyperpams=None, lambda_scale=True, log_scal
             #if loss_dict[loss_key].any():  # truthy keys only
             loss_dict[loss_key] = loss_dict[loss_key] / hyperpams[loss_lambda_map[loss_key]]
 
-    # Optionally hide the total loss term named 'loss'
-    if not show_total_loss and 'loss' in loss_dict:
+    # Optionally hide the total loss term named 'total_loss'
+    if not show_total_loss and 'total_loss' in loss_dict:
         # remove from dict so it's not plotted below
-        loss_dict.pop('loss', None)
+        loss_dict.pop('total_loss', None)
 
     # Create plot
     plt.figure(figsize=(10,20))
@@ -86,7 +86,6 @@ def plot_training_history(adata_map, hyperpams=None, lambda_scale=True, log_scal
         title = title + ' (logscale)'
 
     for curve in loss_dict:
-        #if loss_dict[curve].any():  # truthy keys only
         if log_scale:
             plt.semilogy(abs(loss_dict[curve]), label=curve)
         else:

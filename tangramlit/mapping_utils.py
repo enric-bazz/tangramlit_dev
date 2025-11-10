@@ -5,7 +5,7 @@ import pandas as pd
 import sklearn
 from anndata import AnnData
 import lightning.pytorch as lp
-from lightning.pytorch.callbacks import EarlyStopping
+from lightning.pytorch.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger
 from sklearn.model_selection import KFold
 
@@ -194,6 +194,7 @@ def map_cells_to_space(
         lambda_geary=0,
         lambda_ct_islands=0,
         cluster_label=None,
+        experiment_name="",
 ):
     """
     Map single cell data (`adata_sc`) on spatial data (`adata_st`).
@@ -250,8 +251,8 @@ def map_cells_to_space(
                         )
 
     # Customize ModelCheckpoint callback to avoid memory blow-up
-    checkpoint_callback = lp.callbacks.ModelCheckpoint(
-        dirpath="checkpoints/",
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=f"checkpoints/{experiment_name}/",
         filename='{epoch}-{val_score:.3f}',
         monitor="val_score",
         verbose=True,
@@ -267,25 +268,28 @@ def map_cells_to_space(
     # Set early stopper
     early_stop = EarlyStopping(
         monitor="val_score",  # monitor validation score
-        min_delta=0.001,  # score minimum improvement loss
-        patience=1,  # related to check_val_every_n_epoch
+        min_delta=0,  # score minimum improvement loss
+        patience=20,  # related to check_val_every_n_epoch
         verbose=True,
         mode="max",
         check_on_train_epoch_end=False,  # val_score is in validation_step()
     )
 
+    # Set lr monitor
+    lr_monitor = LearningRateMonitor(logging_interval='epoch')
+
     # Create TB logger for training
-    train_logger = TensorBoardLogger("tb_logs", name="train")
+    train_logger = TensorBoardLogger(save_dir="tb_logs", name=f"train_{experiment_name}")
 
     # Initialize trainer
     trainer = lp.Trainer(
         logger=train_logger,
-        callbacks=[EpochProgressBar(), early_stop, checkpoint_callback],
+        callbacks=[EpochProgressBar(), early_stop, checkpoint_callback, lr_monitor],
         max_epochs=num_epochs,
         log_every_n_steps=1,  # log every training step == epoch
         enable_checkpointing=True,
         enable_progress_bar=True,
-        check_val_every_n_epoch=1,  # validation loop after every N training epochs
+        check_val_every_n_epoch=5,  # validation loop after every N training epochs
     )
 
     # Train the model
@@ -354,7 +358,7 @@ def map_cells_to_space(
     return adata_map, model, data
 
 
-def validate_mapping_experiment(model, datamodule):
+def validate_mapping_experiment(model, datamodule, experiment_name=""):
     """
     Validate mapping experiment. The model must be already trained --> Run only after map_cells_to_space().
 
@@ -364,7 +368,7 @@ def validate_mapping_experiment(model, datamodule):
         Note that when called as 'results = validate_mapping_experiment(model, datamodule)', results is a list with
         element results[0] containing the dictionary.
     """
-    val_logger = TensorBoardLogger("tb_logs", name="val")
+    val_logger = TensorBoardLogger("tb_logs", name=f"val_{experiment_name}")
     trainer = lp.Trainer(
         logger=val_logger,
         enable_progress_bar=False,  # disable progress bar

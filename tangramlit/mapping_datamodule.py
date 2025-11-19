@@ -63,7 +63,7 @@ class MyDataModule(LightningDataModule):
         Executed before setup() in the trainer.fit call.
         """
         # Preprocess data - define adata.uns['training_genes'] - originally implemented in tg.mapping_utils.pp_adatas()
-        logging.info("Preprocessing data...")
+        print("Preprocessing data...")
 
         # 1. Put all var indexes to lower case to align
         self.adata_sc.var.index = [g.lower() for g in self.adata_sc.var.index]
@@ -94,10 +94,10 @@ class MyDataModule(LightningDataModule):
         # 6. Define training genes as intersection of input training genes and overlapping filtered genes
         if self.input_genes is not None:
             training_genes = list(set(self.input_genes) & overlap_filtered_genes)
-            logging.info(f"Using {len(training_genes)} training genes provided by user.")
+            print(f"Using {len(training_genes)} training genes provided by user.")
         else:
             training_genes = list(overlap_filtered_genes)
-        logging.info(f"Using {len(training_genes)} shared marker genes.")
+        print(f"Using {len(training_genes)} shared marker genes.")
 
         # 7. Annotate training genes set in adata.uns['training_genes'] and adata.var['is_training']
         self.adata_sc.uns["training_genes"] = training_genes
@@ -112,6 +112,11 @@ class MyDataModule(LightningDataModule):
             self.adata_st.var["is_training"] = mask_st
         # NOTE: adata.var['is_training'] == True iff the gene is both in the filtered shared genes (trainig_genes) and,
         # if applicable, also selected in train_genes_names
+        if self.val_genes_names is not None:
+            mask_sc = self.adata_sc.var.index.isin(training_genes) & self.adata_sc.var.index.isin(self.val_genes_names)
+            mask_st = self.adata_st.var.index.isin(training_genes) & self.adata_st.var.index.isin(self.val_genes_names)
+            self.adata_sc.var["is_validation"] = mask_sc
+            self.adata_st.var["is_validation"] = mask_st
 
 
     def setup(self, stage: str):
@@ -124,10 +129,12 @@ class MyDataModule(LightningDataModule):
                                               self.adata_st,
                                               genes_names=self.train_genes_names,
                                               cluster_label=self.cluster_label,
+                                              train=True,
                                               )
         self.val_dataset = AdataPairDataset(self.adata_sc,
                                             self.adata_st,
                                             genes_names=self.val_genes_names,
+                                            train=False,
                                             )
         # Warning message if no validation genes are provided
         if self.val_genes_names is None:
@@ -180,8 +187,11 @@ class AdataPairDataset(Dataset):
                  adata_st,
                  genes_names=None,
                  cluster_label=None,
+                 train=None,
                  ):
 
+        
+        self.train=train
         # Get training genes from adata.uns['training_genes'] - defined in prepare_data()
         training_genes = adata_sc.uns['training_genes']
 
@@ -204,14 +214,39 @@ class AdataPairDataset(Dataset):
             X_type = type(adata_st.X)
             logging.error(f"Spatial AnnData X has unrecognized type: {X_type}")
             raise NotImplementedError
+        
+        if self.train:
 
-        # Spatial Graph (both objects returned by squidpy.gr.spatial_neighbors() are of type csr_matrix)
-        self.spatial_graph_conn = torch.tensor(adata_st.obsp['spatial_connectivities'].toarray(), dtype=torch.float32)  # connectivities
-        self.spatial_graph_dist = torch.tensor(adata_st.obsp['spatial_distances'].toarray(), dtype=torch.float32)  # distances
+            # Spatial Graph (both objects returned by squidpy.gr.spatial_neighbors() are of type csr_matrix)
+            print('Allocating nearest neighbor graphs to dense tensors...')
 
-        # A matrix (cluster/annotation OHE)
-        if cluster_label is not None:  # run only on self.train_dataset() call
-            self.A = ohe_cluster_label(adata_sc.obs[cluster_label])
+            # Connectivities
+            self.spatial_graph_conn = torch.tensor(
+                adata_st.obsp['spatial_connectivities'].toarray(),
+                dtype=torch.float32
+            )
+            conn_size_mib = self.spatial_graph_conn.element_size() * self.spatial_graph_conn.numel() / (1024 ** 2)
+            print(
+                f"spatial_graph_conn allocated: shape={tuple(self.spatial_graph_conn.shape)}, size={conn_size_mib:.2f} MiB"
+            )
+
+            # Distances
+            self.spatial_graph_dist = torch.tensor(
+                adata_st.obsp['spatial_distances'].toarray(),
+                dtype=torch.float32
+            )
+            dist_size_mib = self.spatial_graph_dist.element_size() * self.spatial_graph_dist.numel() / (1024 ** 2)
+            print(
+                f"spatial_graph_dist allocated: shape={tuple(self.spatial_graph_dist.shape)}, size={dist_size_mib:.2f} MiB"
+            )
+
+            print('Done.')
+
+            # A matrix (cluster/annotation OHE)
+            print('Computing CT OHE...')
+            if cluster_label is not None:  # run only on self.train_dataset() call
+                self.A = ohe_cluster_label(adata_sc.obs[cluster_label])
+            print('Done.')
 
         # Get train/val genes indexes from names
         self.genes_idx = gene_names_to_indices(gene_names=genes_names, adata=adata_st) if genes_names is not None else slice(None)
@@ -229,16 +264,23 @@ class AdataPairDataset(Dataset):
 
     def __getitem__(self, idx):
         """
-            Returns sliced S and G tensors according to input indexes (for training or validation).
+        Returns sliced S and G tensors according to input indexes (for training or validation).
+        Includes spatial graphs and A only during training.
         """
-        return {
+        batch = {
             'S': self.S[:, self.genes_idx],
             'G': self.G[:, self.genes_idx],
             'genes_number': len(self.genes_idx) if not isinstance(self.genes_idx, slice) else self.n_genes,
-            'spatial_graph_conn': self.spatial_graph_conn,
-            'spatial_graph_dist': self.spatial_graph_dist,
-            'A': self.A if hasattr(self, "A") else None,
         }
+
+        if self.train:
+            batch['spatial_graph_conn'] = self.spatial_graph_conn
+            batch['spatial_graph_dist'] = self.spatial_graph_dist
+            if hasattr(self, "A"):
+                batch['A'] = self.A
+            
+
+        return batch
 
 ### Utilities ###
 

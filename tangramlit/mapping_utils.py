@@ -3,13 +3,17 @@ Mapping functions for Tangram using the Lightning framework.
 """
 import pandas as pd
 import sklearn
+import warnings
 from anndata import AnnData
 import lightning.pytorch as lp
 from lightning.pytorch.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger
 from sklearn.model_selection import KFold
+from torch.nn.functional import softmax, cosine_similarity
+
 
 from . import utils as ut
+import tangramlit.validation_metrics as vm
 from .mapping_datamodule import *
 from .mapping_lightningmodule import *
 
@@ -98,7 +102,8 @@ def validate_mapping_inputs(
             raise ValueError(
                 "cluster_label must be specified and in `adata_sc.obs.keys()` to use the cell type islands loss term."
             )
-        # Check for missing values in cluster_label
+    # Check for missing values in cluster_label
+    if cluster_label is not None :
         n_invalid = adata_sc.obs[cluster_label].isna().sum()
         if n_invalid > 0:        
             # Get boolean mask of valid cells
@@ -268,9 +273,9 @@ def map_cells_to_space(
     # Set early stopper
     early_stop = EarlyStopping(
         monitor="val_score",  # monitor validation score
-        min_delta=0,  # score minimum improvement loss
-        patience=20,  # related to check_val_every_n_epoch
-        verbose=True,
+        min_delta=0.001,  # score minimum improvement loss, 0.001
+        patience=20,  # related to check_val_every_n_epoch, 20
+        verbose=False,
         mode="max",
         check_on_train_epoch_end=False,  # val_score is in validation_step()
     )
@@ -284,12 +289,13 @@ def map_cells_to_space(
     # Initialize trainer
     trainer = lp.Trainer(
         logger=train_logger,
-        callbacks=[EpochProgressBar(), early_stop, checkpoint_callback, lr_monitor],
-        max_epochs=num_epochs,
+        callbacks=[EpochProgressBar(), lr_monitor, early_stop],
+        min_epochs=200,  # 200
+        max_epochs=num_epochs,  # num_epochs
         log_every_n_steps=1,  # log every training step == epoch
-        enable_checkpointing=True,
+        enable_checkpointing=False,
         enable_progress_bar=True,
-        check_val_every_n_epoch=5,  # validation loop after every N training epochs
+        check_val_every_n_epoch=1,  # validation loop after every N training epochs
     )
 
     # Train the model
@@ -298,8 +304,8 @@ def map_cells_to_space(
     # Get the final mapping matrix
     with torch.no_grad():
         if model.hparams.filter:
-            mapping, _, filter_probs = model()  # Unpack values (skip filtered M matrix)
-            final_mapping = mapping.cpu().numpy()  # Turn into numpy array
+            _, mapping_filt, filter_probs = model()  # Unpack values (skip unfiltered M matrix)
+            final_mapping = mapping_filt.cpu().numpy()  # Turn into numpy array
             final_filter = filter_probs.cpu().numpy()  # Turn into numpy array
         else:
             final_mapping = model().cpu().numpy()
@@ -358,7 +364,7 @@ def map_cells_to_space(
     return adata_map, model, data
 
 
-def validate_mapping_experiment(model, datamodule, experiment_name=""):
+def validate_mapping_experiment(model, datamodule, experiment_name=None):
     """
     Validate mapping experiment. The model must be already trained --> Run only after map_cells_to_space().
 
@@ -410,266 +416,6 @@ def split_train_val_genes(adata_sc, adata_st, train_ratio=0.8, random_state=None
     return train_genes, val_genes
 
 
-def get_cv_data(genes_list, k=10):
-    """
-        Generates a pair of training/test gene indexes for cross-validation.
-
-        Args:
-            genes_list (list): List of genes to be used for cross-validation.
-            k (int): Number of folds for k-folds cross-validation. Default is 10.
-
-        Yields:
-            tuple: list of train_genes, list of test_genes
-    """
-    genes_array = np.array(genes_list)
-
-    cv = KFold(n_splits = k)
-
-    for train_idx, test_idx in cv.split(genes_array):
-        train_genes = list(genes_array[train_idx])
-        test_genes = list(genes_array[test_idx])
-        yield train_genes, test_genes
-
-
-
-def cross_validate_mapping(
-        adata_sc,
-        adata_st,
-        filter=False,
-        learning_rate=0.1,
-        num_epochs=1000,
-        k=10,
-        input_genes=None,
-        lambda_d=0,
-        lambda_g1=1,
-        lambda_g2=0,
-        lambda_r=0,
-        lambda_l1=0,
-        lambda_l2=0,
-        lambda_count=1,
-        lambda_f_reg=1,
-        target_count=None,
-        lambda_sparsity_g1=0,
-        lambda_neighborhood_g1=0,
-        lambda_getis_ord=0,
-        lambda_moran=0,
-        lambda_geary=0,
-        lambda_ct_islands=0,
-        cluster_label=None,
-        random_state=None,
-):
-    """
-    Executes genes set cross-validation using Lightning mapper.
-    The genes set must be a subset of the shared genes set: verified with the validate_mapping_inputs() call inside map_cells_to_space().
-
-    Args:
-        adata_sc (AnnData): single cell data
-        adata_st(AnnData): gene spatial data
-        filter (bool): Whether cell filtering is active or not.
-        learning_rate (float): Optional. Learning rate for the optimizer. Default is 0.1.
-        num_epochs (int): Optional. Number of epochs. Default is 1000.
-        k (int): Number of folds for k-folds cross-validation. Default is 10.
-        input_genes (list): Optional. Set of genes to be used for cross-validation.
-        lambda_d (float): Optional. Strength of density regularizer. Default is 0.
-        lambda_g1 (float): Optional. Strength of Tangram loss function. Default is 1.
-        lambda_g2 (float): Optional. Strength of voxel-gene regularizer. Default is 0.
-        lambda_r (float): Optional. Strength of entropy regularizer. Default is 0.
-        lambda_count (float): Optional. Regularizer for the count term. Default is 1. Only valid when filter is True.
-        lambda_f_reg (float): Optional. Regularizer for the filter, which promotes Boolean values (0s and 1s) in the filter. Only valid when filter is True. Default is 1.
-        target_count (int): Optional. The number of cells to be filtered. Default is None.
-        lambda_sparsity_g1 (float): Optional. Strength of sparsity regularizer. Default is 0.
-        lambda_neighborhood_g1 (float): Optional. Strength of neighborhood regularizer. Default is 0.
-        lambda_getis_ord (float): Optional. Strength of Getis-Ord regularizer. Default is 0.
-        lambda_moran (float): Optional. Strength of Moran regularizer. Default is 0.
-        lambda_geary (float): Optional. Strength of Geary regularizer. Default is 0.
-        lambda_ct_islands (float): Optional. Strength of ct islands enforcement. Default is 0.
-        cluster_label (str): Optional. Field in `adata_sc.obs` used for aggregating single cell data. Only valid for lambda_ct-islands > 0. Default is None.
-        random_state (int): Optional. pass an int to reproduce training. Default is None.
-
-    Returns:
-        cv_metrics (dict): Dictionary containing average metric scores across all folds
-    """
-
-
-    curr_cv_set = 1
-
-    # Init fold metrics dictionary
-    cv_metrics = {}
-
-    # Check n folds
-    if k > 0:
-        length = k
-    else:
-        raise ValueError("Invalid number of folds. Please enter a positive integer greater than 0.")
-
-    for train_genes, test_genes in get_cv_data(genes_list=input_genes, k=k):
-
-        print(f"Enter loop with test_genes:{test_genes}")
-        # Train mapper
-        adata_map, mapper, datamodule = map_cells_to_space(
-            adata_sc=adata_sc,
-            adata_st=adata_st,
-            input_genes=input_genes,  # input genes list
-            train_genes_names=train_genes,  # training genes of current fold
-            val_genes_names=test_genes,  # validation genes of current fold
-            filter=False,
-            learning_rate=learning_rate,
-            num_epochs=num_epochs,
-            lambda_d=lambda_d,
-            lambda_g1=lambda_g1,
-            lambda_g2=lambda_g2,
-            lambda_r=lambda_r,
-            lambda_l1=lambda_l1,
-            lambda_l2=lambda_l2,
-            lambda_count=lambda_count,
-            lambda_f_reg=lambda_f_reg,
-            target_count=target_count,
-            lambda_sparsity_g1=lambda_sparsity_g1,
-            lambda_neighborhood_g1=lambda_neighborhood_g1,
-            lambda_getis_ord=lambda_getis_ord,
-            lambda_moran=lambda_moran,
-            lambda_geary=lambda_geary,
-            lambda_ct_islands=lambda_ct_islands,
-            cluster_label=cluster_label,
-            random_state=random_state,
-        )
-
-        # Compute current fold metrics
-        fold_metrics = validate_mapping_experiment(model=mapper, datamodule=datamodule)[0]
-        # Update cv dictionary
-        for key, value in fold_metrics.items():
-            if key not in cv_metrics:
-                cv_metrics[key] = []  # first time, make a list
-            cv_metrics[key].append(value)  # append new fold value
-
-
-    # Calculate average metrics across folds
-    """cv_metrics = {}
-    for metric in metrics:
-        temp_arr = np.zeros(len(fold_metrics[metric]))  # shape = (k,)
-        for fold in range(len(fold_metrics[metric])):
-            temp_arr[fold] = np.mean(fold_metrics[metric][fold])  # scalar
-        cv_metrics[metric] = np.array(temp_arr, dtype='float32').mean().item()  # assing metric mean over folds"""
-
-    return cv_metrics
-
-def run_multiple_mappings(
-    adata_sc,
-    adata_st,
-    config,
-    n_runs=10,
-    compute_mapping_cube=True,
-    compute_filtered_cube=False,
-    compute_filter_square=False,
-    ):
-    """
-    Runs multiple mappings using the same configuration and returns the final alignments cube.
-    If filter is active the final filters matrix is also returned.
-    Args are added to control what tensors are stored for each run: storing n_runs mapping matrices might be memory-intensive.
-
-    Args:
-        adata_sc (AnnData): single cell data
-        adata_st (AnnData): spatial data
-        config (dict): Dictionary containing configuration parameters for the mapping.
-            Object must match keys in map_cell_sto_space() hyperparameters dictionary.
-        n_runs (int): Number of runs to perform. Default is 10.
-        compute_mapping_cube (bool): Whether to compute the final mapping cube. Default is True.
-        compute_filtered_cube (bool): Whether to compute the final filtered cube. Default is False.
-        compute_filter_square (bool): Whether to compute the final filter square. Default is False.
-
-    Returns:
-        Specified arrays stacked into a 2nd or 3rd dimension.
-    """
-    # Checks
-    if (compute_filtered_cube or compute_filter_square) and config['mode'] != 'filter':
-        raise ValueError("compute_filtered_cube and compute_filter_square can only be used in filter mode.")
-
-    # Call the data module to retrieve batch size
-    datamodule = MyDataModule(adata_sc=adata_sc,
-                        adata_st=adata_st,
-                        #input_genes=input_genes,
-                        #train_genes_names=train_genes_names,
-                        #val_genes_names=val_genes_names,
-                        )
-
-    # Last arg is mandatory otherwise the validation_step() method is called with no val_dataset
-    print("\nEntering multiple runs training:")
-
-    # Store dimensions
-    n_cells = adata_sc.n_obs
-    n_spots = adata_st.n_obs
-
-    # Init mapping cube to final size (accessible) to pre-allocate memory
-    if compute_mapping_cube:
-        print(f"Allocating mapping cube of size = {n_cells * n_spots * n_runs * 8 / (1024 ** 2):.2f} MiB ...")
-        mapping_matrices_cube = np.zeros((n_cells, n_spots, n_runs))
-        print(f"Done")
-
-    # Init filtered mapping cube to final size (accessible) to pre-allocate memory
-    if compute_filtered_cube:
-        print(f"Allocating filtered mapping cube of size = {n_cells * n_spots * n_runs * 8 / (1024 ** 2):.2f} MiB ...")
-        filtered_matrices_cube = np.zeros((n_cells, n_spots, n_runs))
-        print(f"Done")
-
-    # Init filters matrix to final size
-    if compute_filter_square:
-        print(f"Allocating filters square of size =  {n_cells * n_runs * 8 / (1024**2):.2f} MiB ...")
-        filters_square = np.zeros((datamodule.adata_sc.n_obs, n_runs))
-        print(f"Done")
-
-    for run in range(n_runs):
-        print(f"\nRun {run+1}/{n_runs}...")
-        # Set run RNG seed (optional)
-        config['random_state'] = run
-        #config['random_state'] = config['random_state'] + run if 'random_state' in config else [run,]
-
-        # Initialize trainer here (otherwise after 1 run max_epochs is reached already)
-        trainer = lp.Trainer(
-            max_epochs=config['num_epochs'],
-            logger=False,
-            enable_checkpointing=False,
-            enable_progress_bar=False,
-            limit_val_batches=0  # disables validation during fit
-        )
-
-        # Initialize the model
-        model = MapperLightning(**config)
-
-        # Train the model
-        trainer.fit(model, datamodule=datamodule)
-
-        # Get the final mapping matrix
-        with torch.no_grad():
-            if model.hparams.filter:
-                mapping, filtered_mapping, filter_probs = model()  # Unpack values (skip filtered M matrix)
-                final_mapping = mapping.cpu().numpy()
-                final_filtered_mapping = filtered_mapping.cpu().numpy()
-                final_filter = filter_probs.cpu().numpy()
-            else:
-                final_mapping = model().cpu().numpy()
-
-        # Store mapping to cube
-        if compute_mapping_cube:
-            mapping_matrices_cube[:,:,run] = final_mapping
-        if compute_filtered_cube:
-            filtered_matrices_cube[:,:,run] = final_filtered_mapping
-
-        # Store filter to square
-        if compute_filter_square:
-            filters_square[:,run] = final_filter
-
-    # Prepare results
-    result = []
-    if compute_mapping_cube:
-        result.append(mapping_matrices_cube)
-    if compute_filtered_cube:
-        result.append(filtered_matrices_cube)
-    if compute_filter_square:
-        result.append(filters_square)
-
-    return result
-
-
 def project_sc_genes_onto_space(adata_map, datamodule):
     """
         Transfer gene expression from the single cell onto space.
@@ -682,81 +428,194 @@ def project_sc_genes_onto_space(adata_map, datamodule):
         Returns:
             AnnData: spot-by-gene AnnData containing spatial gene expression from the single cell data.
     """
-    # Make sc expression matrix dense
-    if hasattr(datamodule.adata_sc.X, "toarray"):
-        datamodule.adata_sc.X = datamodule.adata_sc.X.toarray()
-    # Project sc expression matrix onto space
-    X_space = adata_map.X.T @ datamodule.adata_sc.X
+    # Subset single-cell genes to those marked as training or validation
+    sc_var = datamodule.adata_sc.var
+    # Prepare boolean Series for mask (handle missing columns)
+    is_train = sc_var.get("is_training", pd.Series(False, index=sc_var.index))
+    is_val = sc_var.get("is_validation", pd.Series(False, index=sc_var.index))
+    # Ensure boolean dtype and fill NaNs
+    is_train = is_train.fillna(False).astype(bool)
+    is_val = is_val.fillna(False).astype(bool)
+
+    gene_mask = (is_train | is_val).values
+    if gene_mask.sum() == 0:
+        raise ValueError("No genes selected for projection: no 'is_training' or 'is_validation' True in datamodule.adata_sc.var")
+
+    # Create a local subset of the single-cell AnnData (do not mutate original datamodule)
+    adata_sc_sub = datamodule.adata_sc[:, gene_mask].copy()
+
+    # Make sc expression matrix dense for the subset
+    if hasattr(adata_sc_sub.X, "toarray"):
+        adata_sc_sub.X = adata_sc_sub.X.toarray()
+
+    # Project sc expression matrix onto space (spots x genes_sub)
+    X_space = adata_map.X.T @ adata_sc_sub.X
+
     # Create AnnData object with the projected spatial gene expression
     adata_ge = sc.AnnData(
         X=X_space,  # projected sc expression profiles
         obs=adata_map.var,  # spatial data spot IDs
-        var=datamodule.adata_sc.var,  # all sc gene names
-        uns=datamodule.adata_sc.uns,  # unstructured fields of sc data 
+        var=adata_sc_sub.var.copy(),  # selected sc gene metadata
+        uns=adata_sc_sub.uns,  # unstructured fields of sc data 
     )
-    # Annotate training genes in adata_ge based on spatial data annotation
-    adata_ge.var["is_training"] = adata_ge.var.index.isin(datamodule.adata_st.var.index[datamodule.adata_st.var["is_training"]])
-    
+
+    # Annotate training and validation flags in adata_ge.var
+    # If the original sc var had these columns, copy them; otherwise set False
+    if "is_training" in adata_sc_sub.var.columns:
+        adata_ge.var["is_training"] = adata_sc_sub.var["is_training"].astype(bool)
+    else:
+        adata_ge.var["is_training"] = False
+
+    if "is_validation" in adata_sc_sub.var.columns:
+        adata_ge.var["is_validation"] = adata_sc_sub.var["is_validation"].astype(bool)
+    else:
+        adata_ge.var["is_validation"] = False
+
     return adata_ge
 
-def compare_spatial_gene_expr(adata_ge, datamodule, input_genes=None):
-    """ 
-        Compares generated spatial data with the true spatial data.
-        NOTE: The main issue that arises when comparing the expression profiles of predicted and true spatial data is that non-expressed
-        genes (i.e. all-zeros), excluded from training genes, cannot be compared with cossim metric.
-        To overcome this, non-expressed genes counts are set to an arbitrarily small value 'eps' to avoid zero division errors.
-        The resulting similarity with the predicted expression is zero, a value possible only in this scenario.
-    
-        Args:
-            adata_ge (AnnData): generated spatial data returned by `project_sc_genes_onto_space()`.
-            datamodule (LightningDataModule): LightningDataModule object containing the preprocessed single cell and spatial data (sparsity annotation).
-            input_genes (list): Optional. When passed, returned output will be subset on the list of genes. Default is None.
-    
-        Returns:
-            df_g (Pandas Dataframe): a dataframe with columns: 'score', 'is_training', 'sparsity_st'(spatial data sparsity),
-                'sparsity_sc'(single cell data sparsity), 'sparsity_diff'(spatial sparsity - single cell sparsity).
-    """
-    # Get all overlapping genes (training and not)
-    overlap_genes = datamodule.adata_st.uns["overlap_genes"]
-    # Intersect with input genes
-    if input_genes:
-        overlap_genes = list(set(input_genes) & set(overlap_genes))
 
-    # Annotate cosine similarity of each overlapping gene
-    cos_sims = []
-    # Predicted spatial expression matrix
+def benchmark_mapping(adata_ge, datamodule):
+    """Benchmark predicted spatial expression against true spatial expression.
+
+    Compares generated spatial gene expression (`adata_ge`) with the true spatial
+    expression contained in `datamodule.adata_st`. For each gene present in both
+    datasets (and non-zero in both), the function computes:
+      - cosine similarity (returned in column ``score``)
+      - Pearson correlation coefficient (``PCC``)
+      - Root mean squared error (``RMSE``)
+      - Jensen-Shannon divergence (``JS``)
+      - Structural Similarity Index (``SSIM``)
+
+    The returned DataFrame also contains ``is_training``, ``is_validation``,
+    ``sparsity_st``, ``sparsity_sc`` and ``sparsity_diff`` for downstream
+    analysis.
+
+    Notes:
+      - Genes that are all-zero in either predicted or true matrices are excluded
+        to avoid zero-norm problems when computing cosine similarity.
+
+    Args:
+        adata_ge (AnnData): generated spatial data returned by
+            :func:`project_sc_genes_onto_space()` (spots x genes).
+        datamodule (LightningDataModule): LightningDataModule containing the
+            preprocessed single-cell and spatial data (used for ground-truth and
+            sparsity annotations).
+
+    Returns:
+        pd.DataFrame: Per-gene metrics indexed by gene name. Columns include
+        ``score``, ``PCC``, ``RMSE``, ``JS``, ``SSIM``, ``is_training``,
+        ``is_validation``, ``sparsity_st``, ``sparsity_sc``, ``sparsity_diff``.
+    """
+    # Use genes present in the generated data (`adata_ge`) intersecting with spatial genes
+    genes_ge = list(adata_ge.var_names)
+    spatial_genes = set(datamodule.adata_st.var_names)
+    common_genes = [g for g in genes_ge if g in spatial_genes]
+    if len(common_genes) == 0:
+        raise ValueError("No common genes between generated data (`adata_ge`) and spatial data to compare.")
+
+    # Predicted spatial expression matrix for selected genes
     if hasattr(adata_ge.X, "toarray"):
-        X_pred = adata_ge[:, overlap_genes].X.toarray()
+        X_pred_full = adata_ge[:, common_genes].X.toarray()
     else:
-        X_pred = adata_ge[:, overlap_genes].X
-    # True spatial expression matrix
+        X_pred_full = adata_ge[:, common_genes].X
+    # True spatial expression matrix for selected genes
     if hasattr(datamodule.adata_st.X, "toarray"):
-        X_true = datamodule.adata_st[:, overlap_genes].X.toarray()
+        X_true_full = datamodule.adata_st[:, common_genes].X.toarray()
     else:
-        X_true = datamodule.adata_st[:, overlap_genes].X
-    # Compute row-wise cossim
-    eps = 1e-12
-    for v1, v2 in zip(X_pred.T, X_true.T):
+        X_true_full = datamodule.adata_st[:, common_genes].X
+
+    # Exclude genes that are all-zero in either predicted or true matrices (avoid zero norms)
+    nonzero_pred = ~np.all(X_pred_full == 0, axis=0)
+    nonzero_true = ~np.all(X_true_full == 0, axis=0)
+    valid_mask = nonzero_pred & nonzero_true
+    if valid_mask.sum() == 0:
+        raise ValueError("No genes with non-zero expression in both predicted and true spatial data to compare.")
+
+    selected_idxs = np.where(valid_mask)[0]
+    selected_genes = [common_genes[i] for i in selected_idxs]
+
+    # Compute cosine similarity for selected genes (no eps needed since norms > 0)
+    cos_sims = []
+    for i in selected_idxs:
+        v1 = X_pred_full[:, i]
+        v2 = X_true_full[:, i]
         n1 = np.linalg.norm(v1)
         n2 = np.linalg.norm(v2)
-        cos_sims.append((v1 @ v2) / max(n1 * n2, eps))
-    # Create gene-score dataframe
-    df_g = pd.DataFrame(cos_sims, overlap_genes, columns=["score"])
-    for adata in [adata_ge, datamodule.adata_st]:
-        if "is_training" in adata.var.keys():
-            df_g["is_training"] = adata.var.is_training
+        cos_sims.append((v1 @ v2) / (n1 * n2))
+
+    # Create gene-score dataframe for selected genes (gene names as index)
+    df_g = pd.DataFrame(cos_sims, index=selected_genes, columns=["score"])
+    df_g.index.name = "gene"
+
+    # Compute additional per-gene benchmarking metrics using predicted vs true columns
+    # Extract selected columns for the metrics functions (shape: n_spots x n_selected_genes)
+    X_pred_sel = X_pred_full[:, selected_idxs]
+    X_true_sel = X_true_full[:, selected_idxs]
+
+    # Use validation metrics implementations which operate column-wise
+    try:
+        pcc_vals = vm.pearsonr(X_true_sel, X_pred_sel)
+        rmse_vals = vm.RMSE(X_true_sel, X_pred_sel)
+        js_vals = vm.JS(X_true_sel, X_pred_sel)
+        ssim_vals = vm.ssim(X_true_sel, X_pred_sel)
+    except Exception:
+        # If any metric computation fails, fill with NaNs to avoid breaking the flow
+        n_sel = X_pred_sel.shape[1]
+        pcc_vals = np.full(n_sel, np.nan)
+        rmse_vals = np.full(n_sel, np.nan)
+        js_vals = np.full(n_sel, np.nan)
+        ssim_vals = np.full(n_sel, np.nan)
+
+    # Add metric columns to dataframe (align by selected_genes order)
+    df_g["PCC"] = pcc_vals
+    df_g["RMSE"] = rmse_vals
+    df_g["JS"] = js_vals
+    df_g["SSIM"] = ssim_vals
+    # Annotate training/validation flags from spatial var (preferred)
+    st_var = datamodule.adata_st[:, selected_genes].var
+    df_g["is_training"] = st_var.get("is_training", pd.Series(False, index=st_var.index)).astype(bool)
+    df_g["is_validation"] = st_var.get("is_validation", pd.Series(False, index=st_var.index)).astype(bool)
+
 
     # Add spatial sparsity - indexes are already aligned
-    df_g["sparsity_st"] = datamodule.adata_st[:, overlap_genes].var.sparsity
+    df_g["sparsity_st"] = datamodule.adata_st[:, selected_genes].var.sparsity
     # Add sc sparsity - inner join indexes
     df_g = df_g.merge(
-        pd.DataFrame(datamodule.adata_sc[:, overlap_genes].var["sparsity"]),
+        pd.DataFrame(datamodule.adata_sc[:, selected_genes].var["sparsity"]),
         left_index=True,
         right_index=True,
     )
     df_g.rename({"sparsity": "sparsity_sc"}, inplace=True, axis="columns")
     # Add sparsity difference
     df_g["sparsity_diff"] = df_g["sparsity_st"] - df_g["sparsity_sc"]
+
+    # Add SA statistics
+    uns = datamodule.adata_st.uns
+    if 'moranI' in uns and 'gearyC' in uns:
+        moran_df = uns['moranI'].copy()
+        geary_df = uns['gearyC'].copy()
+
+        # Normalize indexes to lowercase
+        moran_df.index = moran_df.index.str.lower()
+        geary_df.index = geary_df.index.str.lower()
+
+        # Normalize selected genes to lowercase for lookup
+        selected_genes_l = [g.lower() for g in selected_genes]
+
+        # Check expected SA columns
+        if 'I' not in moran_df.columns or 'C' not in geary_df.columns:
+            warnings.warn('SA statistics found but malformed; skipping.')
+        else:
+            # Align on lowercase gene names
+            moran_aligned = moran_df.loc[selected_genes_l, 'I']
+            geary_aligned = geary_df.loc[selected_genes_l, 'C']
+
+            df_g['moranI'] = moran_aligned.values
+            df_g['gearyC'] = geary_aligned.values
+
+    else:
+        warnings.warn('SA statistics not found in .uns; skipping.')
+
 
     # Sort scores
     df_g = df_g.sort_values(by="score", ascending=False)

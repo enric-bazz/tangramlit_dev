@@ -250,6 +250,23 @@ def make_and_save_plots(results: dict, split: str = "train", datasets=None, spli
                 n_text = n_per_split if isinstance(n_per_split, int) and n_per_split >= 0 else "?"
                 ax.set_title(f"{ds}\n(n={n_text})")
 
+    # Normalize y-axis limits within each row (metric)
+    for i, metric in enumerate(METRICS):
+        # Collect all y-limits from this row
+        y_mins, y_maxs = [], []
+        for j in range(cols):
+            ax = axes[i][j]
+            y_min, y_max = ax.get_ylim()
+            y_mins.append(y_min)
+            y_maxs.append(y_max)
+        
+        # Set uniform limits for all subplots in this row
+        if y_mins and y_maxs:
+            global_y_min = min(y_mins)
+            global_y_max = max(y_maxs)
+            for j in range(cols):
+                axes[i][j].set_ylim(global_y_min, global_y_max)
+
     # add overall caption explaining the ablated_* wildcard meaning
     # add global legend mapping colors to ablation names
     import matplotlib.patches as mpatches

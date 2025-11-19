@@ -416,6 +416,23 @@ def main(argv: List[str] | None = None) -> None:
 		except Exception as e:
 			logging.error("Dataset %s top-level failure: %s", dataset_id, e)
 
+	# Normalize y-axis limits within each row (metric)
+	for i, metric in enumerate(METRICS):
+		# Collect all y-limits from this row
+		y_mins, y_maxs = [], []
+		for j in range(cols):
+			ax = axes[i][j]
+			y_min, y_max = ax.get_ylim()
+			y_mins.append(y_min)
+			y_maxs.append(y_max)
+		
+		# Set uniform limits for all subplots in this row
+		if y_mins and y_maxs:
+			global_y_min = min(y_mins)
+			global_y_max = max(y_maxs)
+			for j in range(cols):
+				axes[i][j].set_ylim(global_y_min, global_y_max)
+
 	# After processing all datasets, finalize legend/caption and save the figure
 	# Build legend mapping colors to methods seen
 	ordered_methods_global = sorted(m for m in methods_seen if m is not None)

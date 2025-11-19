@@ -40,7 +40,7 @@ def main():
     study_name = "tangram_mapping_tuning_6"
     study_path = "F:/optuna_tests/"
     storage = f"sqlite:///{study_path}tangram_mapping_tuning.db"
-    n_trials = 1
+    n_trials = 50,
     resume = True
 
     with open("C:/Users/enric/tangramlit_dev/train_config.yaml", "r") as f:
@@ -72,68 +72,7 @@ def main():
     with open(f"{study_path}{study_name}_best_params.yaml", "w") as f:
             yaml.dump(best_params, f, default_flow_style=False)
 
-    trials_df.to_csv(f"{study_path}{study_name}_trials.csv", index=False, sep=';')  # or ,
-
-
-
-
-def main_for_cli(argv: Optional[list] = None):
-    parser = argparse.ArgumentParser(description="Tune MapperLightning hyperparameters with Optuna")
-    parser.add_argument("--adata-sc", required=True, help="Path to single-cell AnnData (.h5ad)")
-    parser.add_argument("--adata-st", required=True, help="Path to spatial AnnData (.h5ad)")
-    parser.add_argument("--n-trials", type=int, default=50)
-    parser.add_argument("--timeout", type=int, default=None, help="Study timeout in seconds")
-    parser.add_argument("--gpus", type=int, default=0, help="Number of GPUs to use (if available)")
-    parser.add_argument("--max-epochs", type=int, default=200, help="Number of epochs per trial")
-    parser.add_argument("--study-name", type=str, default="tangram_optuna_study")
-    parser.add_argument("--storage", type=str, default="sqlite:///optuna_study.db", help="Optuna storage URL to persist study")
-    parser.add_argument("--resume", action="store_true", help="Resume existing study if present in storage")
-    parser.add_argument("--monitor", type=str, default="val_score", help="Metric to monitor from validation (default: val_score)")
-    parser.add_argument("--direction", type=str, choices=["minimize", "maximize"], default="maximize")
-    args = parser.parse_args(argv)
-
-    # Load AnnData objects
-    adata_sc = sc.read_h5ad(args.adata_sc)
-    adata_st = sc.read_h5ad(args.adata_st)
-
-    study_name = args.study_name
-    storage = args.storage      
-    n_trials = args.n_trials
-    resume = args.resume
-    timeout = args.timeout
-    direction = args.direction
-    max_epochs = args.max_epochs
-    monitor = args.monitor
-    data_path = os.path.dirname(args.adata_sc) + "/"
-    study_path = os.path.dirname(storage.replace("sqlite:///", "")) + "/"
-
-    with open(f"{data_path}train_config.yaml", "r") as f:
-        config = yaml.safe_load(f)
-
-    random_state = config["random_state"]
-
-    # Get train/val genes (0.8 split)
-    train_genes, val_genes = tgl.get_train_val_genes(adata_sc, adata_st, random_state=random_state)
-
-    best_params = tgl.tune_mapping_loss_coefficients(
-        adata_sc=adata_sc,
-        adata_st=adata_st,
-        input_genes=None,
-        train_genes_names=train_genes,
-        val_genes_names=val_genes,
-        **config,
-        study_name=study_name,
-        storage=storage,
-        n_trials=n_trials,
-        direction="maximize",
-        monitor="val_score",
-        timeout=None,
-        resume=resume,
-        )
-
-    with open(f"{study_path}best_params.yaml", "w") as f:
-            yaml.dump(best_params, f, default_flow_style=False)
-
+    trials_df.to_csv(f"{study_path}{study_name}_trials.csv", index=False, sep=';')
  
 
 

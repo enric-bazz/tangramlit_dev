@@ -22,8 +22,6 @@ results/
 optuna_tests/
 ablation_study/
 addition_study/
-assessment/
-
 
 # TensorBoard logs, Lightning logs, checkpoints, etc.
 tb_logs/

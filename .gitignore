@@ -23,7 +23,6 @@ optuna_tests/
 ablation_study/
 addition_study/
 assessment/
-benchmarking/
 
 
 # TensorBoard logs, Lightning logs, checkpoints, etc.

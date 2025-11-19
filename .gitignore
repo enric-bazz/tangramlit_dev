@@ -16,13 +16,28 @@ myvenv/
 .vscode
 .vscode/
 
-# Data, results and cache files
+# Data and results
 data/
 results/
-cache/
+optuna_tests/
+ablation_study/
+addition_study/
+assessment/
+benchmarking/
+
 
 # TensorBoard logs, Lightning logs, checkpoints, etc.
-tb_logs
 tb_logs/
 lightning_logs/
 checkpoints/
+
+# Slurm jobs output
+slurm_jobs/
+
+# Cache files
+*.cache
+.cache/
+cache/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/

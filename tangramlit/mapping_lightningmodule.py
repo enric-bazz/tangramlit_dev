@@ -1,6 +1,7 @@
 import random
 import numpy as np
 import sklearn
+import logging
 import lightning.pytorch as lp
 import torch
 import torch.nn as nn
@@ -137,8 +138,9 @@ class MapperLightning(lp.LightningModule):
             graph_conn, graph_dist = batch['spatial_graph_conn'], batch['spatial_graph_dist']
 
             # Get single cell annotation OHE and register buffer (no state dict)
-            ct_encode = batch['A']
-            self.register_buffer("ct_encode", ct_encode, persistent=False)
+            if self.hparams.lambda_ct_islands > 0:
+                ct_encode = batch['A']
+                self.register_buffer("ct_encode", ct_encode, persistent=False)
 
             # Set random seed if specified
             if self.hparams.random_state is not None:
@@ -147,7 +149,9 @@ class MapperLightning(lp.LightningModule):
                 np.random.seed(self.hparams.random_state)
 
             # Initialize mapping matrix M (nn.Parameter.data)
+            #print('Allocating parameter matrix M...')
             self.M = nn.Parameter(torch.randn(n_cells, n_spots))
+            #print('Done.')
 
             # Initialize filter F
             if self.hparams.filter:
@@ -165,11 +169,14 @@ class MapperLightning(lp.LightningModule):
                 (self.hparams.lambda_moran > 0 or self.hparams.lambda_geary > 0, "spatial_weights_morangeary", dict(standardized=True, self_inclusion=False)),
                 (self.hparams.lambda_getis_ord > 0, "spatial_weights_getisord", dict(standardized=False, self_inclusion=True)),
             ]
-            # Compute and register buffers (not loaded in state dict)
+            #print("Allocating spatial weights dense tensors...")
             for cond, name, kwargs in buffer_map:
                 if cond:
                     tensor = self._compute_spatial_weights(graph_conn, graph_dist, **kwargs)
                     self.register_buffer(name, tensor, persistent=False)
+                    size_mib = tensor.element_size() * tensor.nelement() / (1024 ** 2)
+                    #print(f"Registered buffer '{name}' | shape={tuple(tensor.shape)} | size={size_mib:.2f} MiB")
+            #print("Done.")
 
             # Compute LISA on ground truth (reference values)
             self.getis_ord_G_star_ref, self.moran_I_ref, self.gearys_C_ref = self._spatial_local_indicators(G)
@@ -235,10 +242,13 @@ class MapperLightning(lp.LightningModule):
         gearys_C = None
         if self.hparams.lambda_geary > 0:
             n_spots = G.shape[0]
+            W = self.spatial_weights_morangeary  # (n_spots, n_spots), dense manageable
             m2 = torch.sum((G - G.mean(dim=0)) ** 2, dim=0) / (n_spots - 1)
-            weighted_diff_sq = self.spatial_weights_morangeary.unsqueeze(2) * ((G[None, :, :] - G[:, None, :]) ** 2)
-            # NOTE: None entries add a singleton dimension, Torch broadcasts to (n_spots, n_spots, n_cells)
-            gearys_C = weighted_diff_sq.sum(dim=(0, 1)) / (2 * m2)
+            WG = W @ G                            # (n_spots, n_genes)
+            term1 = (W.sum(dim=1, keepdim=True) * (G ** 2)).sum(dim=0)  # sum_i w_i. * G_i^2
+            term2 = (G * WG).sum(dim=0)                               # sum_i G_i * (sum_j w_ij G_j)
+            numerator = term1 - term2
+            gearys_C = numerator / m2
 
         return getis_ord_G_star, moran_I, gearys_C
     
@@ -279,13 +289,16 @@ class MapperLightning(lp.LightningModule):
         G_train = batch['G']  # spatial data
 
         # Forward step
+        #print('Starting forward pass...')
         if self.hparams.filter:
             M_probs, M_probs_filtered, F_probs = self()  # Get softmax probabilities and filter probabilities
         else:
             M_probs = self()  # Get softmax probabilities
+        #print('Done.')
 
         # Loss computation
         # Expression term
+        #print('Computing G_pred...')
         if self.hparams.filter:
             G_pred = M_probs_filtered.T @ S_train
         else:
@@ -293,42 +306,52 @@ class MapperLightning(lp.LightningModule):
         gv_term = self.hparams.lambda_g1 * cosine_similarity(G_pred, G_train, dim=0).mean()
         vg_term = self.hparams.lambda_g2 * cosine_similarity(G_pred, G_train, dim=1).mean()
         expression_term = gv_term + vg_term
+        #print('Done.')
 
         # Density term
+        #print('Computing KL divergence...')
         if self.hparams.filter:
             d_pred = torch.log(M_probs_filtered.sum(axis=0) / (F_probs.sum()))
         else:
             d_pred = torch.log(M_probs.sum(axis=0) / self.M.shape[0])
         density_term = self.hparams.lambda_d * self._density_criterion(d_pred, self.d_prior)
+        #print('Done.')
 
         # Entropy regularizer term
+        #print('Computing regularizers...')
         regularizer_term = self.hparams.lambda_r * (torch.log(M_probs) * M_probs).sum()
 
         # l1 and l2 regularization terms
         l1_term = self.hparams.lambda_l1 * self.M.abs().sum()
         l2_term = self.hparams.lambda_l2 * (self.M ** 2).sum()
         # NOTE: These terms act on the alignment matrix M, not the softmax matrix M_probs
+        #print('Done.')
 
         # Sparsity weighted expression term
-        if self.hparams.lambda_sparsity_g1 > 0:
-            mask = G_train != 0
-            gene_sparsity = mask.sum(axis=0) / G_train.shape[0]
-            gene_sparsity = 1 - gene_sparsity.reshape((-1,))
-            gv_sparsity_term = self.hparams.lambda_sparsity_g1 * (
-                        (cosine_similarity(G_pred, G_train, dim=0) * (1 - gene_sparsity)) / (1 - gene_sparsity).sum()).sum()
-        else:
-            gv_sparsity_term = 0
+        # if self.hparams.lambda_sparsity_g1 > 0:
+        #     mask = G_train != 0
+        #     gene_sparsity = mask.sum(axis=0) / G_train.shape[0]
+        #     gene_sparsity = 1 - gene_sparsity.reshape((-1,))
+        #     gv_sparsity_term = self.hparams.lambda_sparsity_g1 * (
+        #                 (cosine_similarity(G_pred, G_train, dim=0) * (1 - gene_sparsity)) / (1 - gene_sparsity).sum()).sum()
+        # else:
+        gv_sparsity_term = 0.0  # this was entering the loss dict as an int, not a tensor
 
         # Spatial neighborhood-based gene expression term
+        #print('Computing neighborhood term...')
         if self.hparams.lambda_neighborhood_g1 > 0:
             gv_neighborhood_term = self.hparams.lambda_neighborhood_g1 * cosine_similarity(self.voxel_weights @ G_pred,
                                                                                     self.voxel_weights @ G_train,
                                                                                     dim=0).mean()
         else:
             gv_neighborhood_term = 0
+        #print('Done.')
+
 
         # Spatial autocorrelation statistics
+        #print('Computing LISA...')
         getis_ord_G_star_pred, moran_I_pred, gearys_C_pred = self._spatial_local_indicators(G_pred)
+        #print('Done.')
 
         # Spatial autcorrelation terms
         getis_ord_term, moran_term, gearys_term = 0, 0, 0
@@ -341,8 +364,9 @@ class MapperLightning(lp.LightningModule):
             gearys_term = self.hparams.lambda_geary * cosine_similarity(self.gearys_C_ref, gearys_C_pred, dim=0).mean()
 
         # Cell type island enforcement
+        #print('Computing CT islands term...')
         if self.hparams.lambda_ct_islands > 0:
-            if filter:
+            if self.hparams.filter:
                 ct_map = (M_probs_filtered.T @ self.ct_encode)
             else:
                 ct_map = (M_probs.T @ self.ct_encode)
@@ -350,6 +374,7 @@ class MapperLightning(lp.LightningModule):
                                                                     torch.tensor([0], dtype=torch.float32)).mean())
         else:
             ct_island_term = 0
+        #print('Done.')
 
         # Total loss
         total_loss = (
@@ -403,11 +428,24 @@ class MapperLightning(lp.LightningModule):
             self.filter_history['n_cells'].append((F_probs > 0.5).sum().item())
 
         # Create a state-persistent dictionary with only non-None values
-        self.epoch_values = {k: v.detach().cpu().item() for k, v in step_output.items() if v is not None}
+        # Be robust to plain Python numbers slipping into step_output by
+        # handling tensors and numeric types separately.
+        self.epoch_values = {}
+        for k, v in step_output.items():
+            if v is None:
+                continue
+            if torch.is_tensor(v):
+                self.epoch_values[k] = v.detach().cpu().item()
+            else:
+                # try to cast numeric-like values to float, otherwise keep as-is
+                try:
+                    self.epoch_values[k] = float(v)
+                except Exception:
+                    self.epoch_values[k] = v
 
         return step_output
 
-    def on_train_epoch_end(self, N=100, verbose=False):
+    def on_train_epoch_end(self, N=1, verbose=False):
         """
             Handle training history tracking, logging and displaying.
 
@@ -423,17 +461,14 @@ class MapperLightning(lp.LightningModule):
         self.log_dict(self.epoch_values, prog_bar=False, logger=True, on_epoch=True)
 
         # Print every N epochs
-        if self.current_epoch % N == 0:
+        if verbose and (self.current_epoch % N == 0):
             losses = {
                 k: v.item() if torch.is_tensor(v) else v
                 for k, v in self.trainer.logged_metrics.items()  # logged_metrics: metrics logged via log() with the logger argument set
             }
-            if verbose:
-                print(f"Epoch {self.current_epoch}: {losses}")
+            print(f"Epoch {self.current_epoch}: {losses}")
 
-        # Track learning rate scheduling (use lightning.pytorch.callbacks.LearningRateMonitor instead)
-        # lr = self.trainer.optimizers[0].param_groups[0]["lr"]
-        # self.log("lr", lr, prog_bar=False)
+
 
 
     def configure_optimizers(self):
@@ -486,38 +521,51 @@ class MapperLightning(lp.LightningModule):
         G_val = batch['G']  # spatial data (test genes)
 
         # Run "forward" pass and prediction
-        M_probs = softmax(self.M, dim=1)  # mapping matrix (learned on training genes)
-        G_pred = torch.matmul(M_probs.t(), S_val)  # projected single-cell data (test genes)
+        # print("Validation forward pass...")
+        if self.hparams.filter:
+            _, M_probs_filtered, _ = self()  # Get softmax probabilities and filter probabilities
+            G_pred = M_probs_filtered.T @ S_val
+        else:
+            M_probs = self()  # Get softmax probabilities
+            G_pred = M_probs.T @ S_val
+        # print('Done.')
+
 
         # Genes scores
         gv_scores = cosine_similarity(G_pred, G_val, dim=0)
         # Sparsity level of genes
-        mask = G_val != 0
-        gene_sparsity = mask.sum(axis=0) / G_val.shape[0]
-        gene_sparsity = 1 - gene_sparsity.reshape((-1,))
+        # mask = G_val != 0
+        # gene_sparsity = mask.sum(axis=0) / G_val.shape[0]
+        # gene_sparsity = 1 - gene_sparsity.reshape((-1,))
         # Sparsity weighted score
-        sp_sparsity_weighted_scores = ((gv_scores * (1 - gene_sparsity)) / (1 - gene_sparsity).sum())
+        # sp_sparsity_weighted_scores = ((gv_scores * (1 - gene_sparsity)) / (1 - gene_sparsity).sum())
         # AUC (plot conditioned on trainer function)
-        plot_auc = self.trainer.state.fn == 'validate'
-        auc_score, _ = vm.poly2_auc(gv_scores, gene_sparsity, plot_auc=plot_auc)  # skip coordinates
+        # plot_auc = self.trainer.state.fn == 'validate'
+        # auc_score, _ = vm.poly2_auc(gv_scores, gene_sparsity, plot_auc=plot_auc)  # skip coordinates
         # Entropy of the mapping probabilities
-        prob_entropy = - torch.mean(torch.sum((torch.log(M_probs) * M_probs), dim=1) / np.log(M_probs.shape[1]))
+        # prob_entropy = - torch.mean(torch.sum((torch.log(M_probs) * M_probs), dim=1) / np.log(M_probs.shape[1]))
         # Validation dictionary
         val_dict = {'val_score': gv_scores.mean(),
-                    'val_sparsity-weighted_score': sp_sparsity_weighted_scores.sum(),
-                    'val_AUC': auc_score,
-                    'val_entropy': prob_entropy}
+                    # 'val_sparsity-weighted_score': sp_sparsity_weighted_scores.sum(),
+                    # 'val_AUC': auc_score,
+                    # 'val_entropy': prob_entropy,
+                    }
 
         if self.trainer.state.fn == 'fit':  # if trainer.fit() is called
             # Log on progress bar and train logger
             self.log_dict(val_dict, prog_bar=True, logger=True, on_epoch=True)
 
         if self.trainer.state.fn == 'validate':  # if trainer.validate() is called
+            mask = G_val != 0
+            gene_sparsity = mask.sum(axis=0) / G_val.shape[0]
+            gene_sparsity = 1 - gene_sparsity.reshape((-1,))
+            auc_score, _ = vm.poly2_auc(gv_scores, gene_sparsity, plot_auc=True)  # skip coordinates
             # Define imputed and raw spatial expression arrays
             imputed_data = G_pred.detach().cpu().numpy()
             raw_data = G_val.detach().cpu().numpy()
             # Compute validation metrics (all np arrays averaged into floats)
-            metrics_dict = {'val_SSIM': vm.ssim(raw_data, imputed_data).mean(),
+            metrics_dict = {'val_AUC': auc_score,
+                            'val_SSIM': vm.ssim(raw_data, imputed_data).mean(),
                             'val_PCC': vm.pearsonr(raw_data, imputed_data).mean(),
                             'val_RMSE': vm.RMSE(raw_data, imputed_data).mean(),
                             'val_JS': vm.JS(raw_data, imputed_data).mean()}

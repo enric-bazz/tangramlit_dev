@@ -46,3 +46,4 @@ cache/
 *.h5ad
 *.h5
 *.gz
+*.png

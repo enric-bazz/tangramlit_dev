@@ -15,6 +15,37 @@ OUT_DIR = Path(__file__).resolve().parent
 DEFAULT_DATASETS = [f"Dataset{i}" for i in range(1, 6)]
 METRICS = ["PCC", "RMSE", "JS", "SSIM"]
 
+# ---------------------------------------------------------
+# Pretty λ notation mapping (same as polyfit_montage.py)
+# ---------------------------------------------------------
+PRETTY_NAMES = {
+    "ablated_baseline": r"baseline",
+    "ablated_vanilla": r"vanilla",
+    "ablated_full": r"full",
+    "ablated_lambda_g2": r"ablated $\lambda_{\mathrm{s/g}}$",
+    "ablated_lambda_d": r"ablated $\lambda_{\mathrm{KL}}$",
+    "ablated_lambda_geary": r"ablated $\lambda_{\mathrm{geary}}$",
+    "ablated_lambda_getis_ord": r"ablated $\lambda_{\mathrm{getis\_ord}}$",
+    "ablated_lambda_moran": r"ablated $\lambda_{\mathrm{moran}}$",
+    "ablated_lambda_neighborhood_g1": r"ablated $\lambda_{G}$",
+    "ablated_lambda_r": r"ablated $\lambda_{\mathrm{entropy}}$",
+}
+
+# ---------------------------------------------------------
+# Ordering for consistency (same as polyfit_montage.py)
+# ---------------------------------------------------------
+ORDER = [
+    "ablated_baseline",
+    "ablated_vanilla",
+    "ablated_full",
+    "ablated_lambda_g2",
+    "ablated_lambda_d",
+    "ablated_lambda_r",
+    "ablated_lambda_geary",
+    "ablated_lambda_moran",
+    "ablated_lambda_getis_ord",
+    "ablated_lambda_neighborhood_g1",
+]
 
 def extract_metrics_from_df(df: pd.DataFrame):
     """Extract train/val metric values from a dataframe as lists.
@@ -76,31 +107,6 @@ def extract_metrics_from_df(df: pd.DataFrame):
                         pass
         return out
 
-    # 2) If there's an explicit split-like column, collect per-row
-    split_col = None
-    for cand in ("split", "set", "type", "phase"):
-        if cand in df.columns:
-            split_col = cand
-            break
-    if split_col is not None:
-        for _, row in df.iterrows():
-            split = str(row[split_col]).strip().lower()
-            if split in ("train", "val"):
-                for m in METRICS:
-                    try:
-                        out[split][m].append(float(row[m]))
-                    except Exception:
-                        pass
-        return out
-
-    # 3) Fallback: treat all rows as validation runs
-    for _, row in df.iterrows():
-        for m in METRICS:
-            try:
-                out["val"][m].append(float(row[m]))
-            except Exception:
-                pass
-    return out
 
 
 def collect_ablation_data(root: Path, datasets):
@@ -172,8 +178,15 @@ def make_and_save_plots(results: dict, split: str = "train", datasets=None, spli
         logging.warning("No ablations found; plots will be empty")
     palette_colors = sns.color_palette("tab20", n_colors=max(1, len(all_ablations)))
     ablation_palette = {ab: palette_colors[i % len(palette_colors)] for i, ab in enumerate(all_ablations)}
-    # Display labels without the leading 'ablated_' prefix for readability
-    ablation_display = {ab: (ab[8:] if ab.startswith('ablated_') else ab) for ab in all_ablations}
+    # Final display-name mapping
+    # Keep only those in ORDER, preserving ORDER
+    ordered_ablations = [ab for ab in ORDER if ab in all_ablations]
+
+    ablation_display = {
+        ab: PRETTY_NAMES.get(ab, ab)
+        for ab in ordered_ablations
+    }
+
     for j, ds in enumerate(datasets):
         # ensure same ablation order across metrics: directory order
         ablations = list(results.get(ds, {}).keys())
@@ -212,22 +225,14 @@ def make_and_save_plots(results: dict, split: str = "train", datasets=None, spli
         
         for i, metric in enumerate(METRICS):
             ax = axes[i][j]
-            labels = list(ablations)
+            # final ordered labels = intersection of ORDER with actual present ablations
+            final_labels = [ab for ab in ORDER if ab in ablations]
 
             rows_data = [r for r in filtered_rows_data if r["metric"] == metric]
 
             if rows_data:
                 dfp = pd.DataFrame(rows_data)
-                try:
-                    sns.boxplot(x="ablation", y="value", data=dfp, order=labels, ax=ax, palette=ablation_palette)
-                except Exception:
-                    # fallback: draw simple matplotlib boxplot
-                    data_for_plot = [dfp.loc[dfp["ablation"] == ab, "value"].values for ab in labels]
-                    non_empty = [d for d in data_for_plot if len(d) > 0]
-                    if non_empty:
-                        ax.boxplot(non_empty, positions=np.arange(len(non_empty)))
-                        ax.set_xticks(np.arange(len(labels)))
-                        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+                sns.boxplot(x="ablation", y="value", data=dfp, order=ORDER, ax=ax, palette=ablation_palette, fliersize=False)
             else:
                 # no numeric rows for any ablation
                 ax.text(0.5, 0.5, "no data", ha="center", va="center", fontsize=9, color="#777777")
@@ -237,9 +242,16 @@ def make_and_save_plots(results: dict, split: str = "train", datasets=None, spli
             ax.set_xlabel("")
             # show x-axis labels only on bottom row, hide on other rows
             if i == len(METRICS) - 1:  # bottom row
-                ax.set_xticklabels([ablation_display.get(label, label) for label in labels], rotation=45, ha="right", fontsize=8)
+                ax.set_xticks(range(len(final_labels)))
+                ax.set_xticklabels(
+                    [ablation_display.get(ab, ab) for ab in final_labels],
+                    rotation=45,
+                    ha="right",
+                    fontsize=8,
+                )
             else:
                 ax.set_xticklabels([])
+
             if j == 0:
                 ax.set_ylabel(metric)
             # set column title with dataset and number of columns (genes) if available
@@ -270,18 +282,20 @@ def make_and_save_plots(results: dict, split: str = "train", datasets=None, spli
     # add overall caption explaining the ablated_* wildcard meaning
     # add global legend mapping colors to ablation names
     import matplotlib.patches as mpatches
-    legend_handles = [mpatches.Patch(facecolor=ablation_palette[ab], edgecolor='black', label=ablation_display[ab]) for ab in all_ablations]
-    ncol_legend = min(len(legend_handles), 6) if len(legend_handles) > 0 else 1
+    legend_handles = [
+        mpatches.Patch(
+            facecolor=ablation_palette[ab],
+            edgecolor="black",
+            label=ablation_display.get(ab, ab)
+        )
+        for ab in final_labels
+    ]
+    ncol_legend = min(len(legend_handles), 5) if len(legend_handles) > 0 else 1
     plt.tight_layout()
     fig.subplots_adjust(top=0.88, bottom=0.14)
     if legend_handles:
-        fig.legend(handles=legend_handles, loc='upper center', ncol=ncol_legend, frameon=True, title='Ablated models')
-    # add explanatory caption at the bottom
-    caption = (
-        "Note: folder names are 'ablated_*' where '*' is the ablation identifier. "
-        "Each box shows the distribution of the metric across runs for that ablated model."
-    )
-    fig.text(0.5, 0.04, caption, ha="center", fontsize=9)
+        fig.legend(handles=legend_handles, loc='upper center', ncol=ncol_legend, frameon=True, title='Models')
+
     out_name = f"boxplot_{split}_ablation.png"
     out_path = OUT_DIR / out_name
     fig.savefig(out_path, dpi=200, bbox_inches="tight")

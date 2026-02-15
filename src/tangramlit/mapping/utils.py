@@ -88,7 +88,7 @@ def project_sc_genes_onto_space(adata_map, datamodule):
 
 
 def compare_spatial_geneexp(adata_ge, datamodule):
-    """Benchmark predicted spatial expression against true spatial expression.
+    """Compare predicted spatial expression against true spatial expression.
 
     Compares generated spatial gene expression (`adata_ge`) with the true spatial
     expression contained in `datamodule.adata_st`. For each gene present in both

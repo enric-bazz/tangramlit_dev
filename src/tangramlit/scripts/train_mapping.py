@@ -107,6 +107,11 @@ def test_analysis(adata_sc, adata_st, adata_map, mapper, datamodule, config):
     tgl.transfer_annotation(adata_map=adata_map, adata_st=adata_st, sc_cluster_label='class_label',
                         filter=config['filter'])
     
+    # Benchmarking
+    df_g = tgl.benchmark_mapping(ad_ge, datamodule, df)
+    print(df_g.head())
+
+    
 
 
 def main():

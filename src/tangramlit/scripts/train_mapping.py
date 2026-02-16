@@ -136,3 +136,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+    #TODO: create a script that takes the two adata as input and a trainin config and 
+    # writes in output three anndata: the two input preprocessed and the adata_map.
+
+    #TODO: create a script that performs an optuna tuning of lambdas and automiatically
+    # trains a model to completion with that configuration.

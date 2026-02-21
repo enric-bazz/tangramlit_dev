@@ -28,3 +28,11 @@ dependencies = [
     "tqdm==4.67.1",
     "xarray-dataclasses==1.9.1",
 ]
+
+[dependency-groups]
+dev = [
+    "black>=26.1.0",
+]
+
+[project.scripts]
+tangramlit = "tangramlit.cli.main:main"

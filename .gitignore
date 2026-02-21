@@ -15,6 +15,7 @@ myvenv/
 # Data folder
 data/
 !src/tangramlit/data/
+out/
 
 # VScode cofing
 .vscode

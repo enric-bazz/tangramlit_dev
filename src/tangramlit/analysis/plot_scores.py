@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
-from ..mapping.lightning_module import poly2_auc
+from ..mapping.lit_mapper import poly2_auc
 
 def plot_training_scores(df_g, bins=10, alpha=0.7):
     """

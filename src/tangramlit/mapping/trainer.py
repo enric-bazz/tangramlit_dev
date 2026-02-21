@@ -13,7 +13,7 @@ from lightning.pytorch.loggers import TensorBoardLogger
 
 
 from ..data.paired_data_module import PairedDataModule
-from .lightning_module import MapperLightning, EpochProgressBar, poly2_auc
+from .lit_mapper import MapperLightning, EpochProgressBar
 
 
 def validate_mapping_inputs(

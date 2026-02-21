@@ -10,7 +10,7 @@ from .utils import (
     project_sc_genes_onto_space,
     compare_spatial_geneexp,
 )
-from .lightning_module import (
+from .lit_mapper import (
     MapperLightning,
     EpochProgressBar,
     poly2_auc,

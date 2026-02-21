@@ -302,7 +302,6 @@ class MapperLightning(LightningModule):
             getis_ord_G_star_pred, moran_I_pred, gearys_C_pred = self._spatial_local_indicators(G_pred)
 
         loss_dict = self.loss_fn(
-            S=S_train,
             G=G_train,
             G_pred=G_pred,
             M=self.M,
@@ -441,6 +440,8 @@ class MapperLightning(LightningModule):
                     }
 
         self.log_dict(val_dict, prog_bar=True, logger=True, on_epoch=True)
+
+        return val_dict
 
     def on_validation_start(self):
         """

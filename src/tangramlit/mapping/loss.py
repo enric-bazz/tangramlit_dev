@@ -15,7 +15,7 @@ class TangramLoss:
          # Define density criterion
         self._density_criterion = nn.KLDivLoss(reduction="sum")
 
-    def __call__(self, S, 
+    def __call__(self, 
                  G, G_pred, 
                  M, M_probs, M_probs_filtered, 
                  F_probs, 
@@ -29,7 +29,6 @@ class TangramLoss:
         Computationally expensive terms are computed only if their respective lambda_ parameter is > 0.
         
         Args:
-            S: single-cell data
             G: spatial data
             G_pred: predicted spatial data
             M: alignment matrix (before softmax)
@@ -77,7 +76,7 @@ class TangramLoss:
             gv_sparsity_term = self.hparams.lambda_sparsity_g1 * (
                         (cosine_similarity(G_pred, G, dim=0) * (1 - gene_sparsity)) / (1 - gene_sparsity).sum()).sum()
         else:
-            gv_sparsity_term = None
+            gv_sparsity_term = 0.0
 
         # neighbor-smoothing term
         if self.hparams.lambda_neighborhood_g1 > 0:
@@ -85,7 +84,7 @@ class TangramLoss:
                                                                                     voxel_weights @ G,
                                                                                     dim=0).mean()
         else:
-            gv_neighborhood_term = None
+            gv_neighborhood_term = 0.0
 
         # LISA terms
         getis_ord_term, moran_term, gearys_term = None, None, None
@@ -108,7 +107,7 @@ class TangramLoss:
             ct_island_term = self.hparams.lambda_ct_islands * (torch.max((ct_map) - (neighborhood_filter @ ct_map),
                                                                     zero_tensor).mean())
         else:
-            ct_island_term = None
+            ct_island_term = 0.0
 
         total_loss = (
             - gv_term

@@ -78,9 +78,10 @@ def  run(args):
     import scanpy as sc
     from pathlib import Path
 
-    from ..mapping.trainer import map_cells_to_space
-    from ..mapping.utils import validate_mapping_experiment
     from ..data import kfold_gene_splits
+    from ..mapping.trainer import map_cells_to_space
+    from ..mapping.utils import validate_mapping_experiment, project_sc_genes_onto_space, compare_spatial_geneexp
+    from ..benchmarking import benchmark_mapping, aggregate_benchmarking_metrics
 
     # Convert to absolute paths
     input_dir = Path(os.path.abspath(args.input_dir))
@@ -144,16 +145,26 @@ def  run(args):
             **config
         )
 
-        # Compute fold metrics
-        fold_results = validate_mapping_experiment(mapper, datamodule)
-        print(f"    Fold {fold_idx} complete")
+        # Compute fold metrics (internal and benchmarking)
+        fold_results = validate_mapping_experiment(mapper, datamodule)[0]  # extract dict from list 
+        adata_ge = project_sc_genes_onto_space(adata_map, datamodule)
+        fold_df_g = compare_spatial_geneexp(adata_ge, datamodule)
+        fold_df_g = benchmark_mapping(adata_ge, datamodule, fold_df_g)
+        fold_summary = aggregate_benchmarking_metrics(fold_df_g)
+
+        print(f"    Fold {fold_idx} completed.")
         
         # Accumulate metrics
-        fold_metrics_per_fold.append({'fold': fold_idx, **fold_results})
+        fold_metrics_per_fold.append({'fold': fold_idx, **fold_results, **fold_summary['mean']})
         for key, value in fold_results.items():
             if key not in cv_metrics:
                 cv_metrics[key] = []
             cv_metrics[key].append(value)
+        # Add benchmarking metrics mean
+        for ind in fold_summary.index:
+            if ind not in cv_metrics:
+                cv_metrics[ind] = []
+            cv_metrics[ind] = fold_summary['mean'].loc[ind]
 
     # Calculate average metrics
     print("Computing average metrics...")

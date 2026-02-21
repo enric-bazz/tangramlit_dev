@@ -1,4 +1,3 @@
-import warnings
 import pandas as pd
 import numpy as np
 
@@ -24,9 +23,8 @@ def benchmark_mapping(adata_ge, datamodule, df_g):
             tangramlit.mapping.utils.compare_spatial_geneexpr()
 
     Returns:
-        pd.DataFrame: Per-gene metrics indexed by gene name. Columns include
-        ``score``, ``PCC``, ``RMSE``, ``JS``, ``SSIM``, ``is_training``,
-        ``is_validation``, ``sparsity_st``, ``sparsity_sc``, ``sparsity_diff``.
+        pd.DataFrame: Per-gene metrics indexed by gene name. Added columns include
+        ``PCC``, ``RMSE``, ``JS``, ``SSIM``.
     """
     # Use genes present in the generated data (`adata_ge`) intersecting with spatial genes
     genes_ge = list(adata_ge.var_names)
@@ -86,3 +84,26 @@ def benchmark_mapping(adata_ge, datamodule, df_g):
     df_g = df_g.sort_values(by="score", ascending=False)
 
     return df_g
+
+def aggregate_benchmarking_metrics(df_g: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate per-gene benchmarking metric values.
+
+    Returns a dataframe with mean, Q1, median, Q3
+    for each metric (PCC, RMSE, JS, SSIM).
+    """
+
+    cols = ["PCC", "RMSE", "JS", "SSIM"]
+
+    missing = [c for c in cols if c not in df_g.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    summary = pd.DataFrame({
+        "mean": df_g[cols].mean(),
+        "q1": df_g[cols].quantile(0.25),
+        "median": df_g[cols].quantile(0.5),
+        "q3": df_g[cols].quantile(0.75),
+    })
+
+    return summary

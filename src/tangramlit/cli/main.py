@@ -1,12 +1,15 @@
 """Main entry point for tangramlit CLI commands."""
 
 import argparse
+import warnings
 from typing import Optional
 
 from . import train_mapper, tune_hyperparameters, crossvalidate_genes
 
 
 def main(argv: Optional[list] = None):
+    warnings.filterwarnings("ignore")
+
     # Top level parser
     parser = argparse.ArgumentParser(
         prog="tangramlit",

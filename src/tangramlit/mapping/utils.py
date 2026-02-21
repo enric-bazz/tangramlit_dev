@@ -23,9 +23,9 @@ def validate_mapping_experiment(model, datamodule, experiment_name=None):
         enable_progress_bar=False,  # disable progress bar
         num_sanity_val_steps=0,  # skip sanity check
     )
-    validation_results = trainer.validate(model=model, datamodule=datamodule)
+    validation_dict = trainer.validate(model=model, datamodule=datamodule)
 
-    return validation_results
+    return validation_dict
 
 
 

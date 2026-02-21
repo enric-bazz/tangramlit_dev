@@ -36,3 +36,34 @@ Accordingly:
 * Only a uniform density prior over spots is implemented
 * `rna_count_based` priors are not supported
 * Custom density priors are not yet implemented
+
+### Command-Line Interface (CLI)
+
+The `tangramlit` package provides a CLI to run common workflows without writing Python code. After installing the package, you can use the following commands:
+
+```bash
+# Train a spatial mapping model
+tangramlit train
+
+# Tune loss hyperparameters
+tangramlit tune
+
+# Cross-validate genes mapping
+tangramlit cv
+```
+
+Further detais and examples with:
+
+``` bash
+# Show help for all commands
+tangramlit --help
+```
+
+### Public API
+
+In addition to the CLI, `tangramlit` exposes a Python API for interactive use in scripts or notebooks. It is largely consistent with the original Tangram API, with extensions for:
+
+- Training, analysis, and inspection of mappings  
+- Plotting and visualization  
+- Mapping validation and benchmarking  
+- Hyperparameter optimization.

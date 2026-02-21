@@ -9,8 +9,8 @@ from .annotation import (
 from .cells_filter import (
     compute_filter_corr,
     filter_cell_choice_consistency,
-    plot_filter_count,
     plot_filter_weights,
+    plot_filter_count,
 )
 from .deterministic_mapping import (
     get_cell_spot_pair,
@@ -42,6 +42,8 @@ __all__ = [
     # Cells filter
     "compute_filter_corr",
     "filter_cell_choice_consistency",
+    "plot_filter_weights",
+    "plot_filter_count",
     # Deterministic mapping
     "get_cell_spot_pair",
     "get_spot_cell_pair",

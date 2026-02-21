@@ -6,7 +6,7 @@ from .metrics import (
     JS,
     RMSE,
 )
-from .utils import benchmark_mapping
+from .utils import benchmark_mapping, aggregate_benchmarking_metrics
 
 __all__ = [
     # Metrics
@@ -16,4 +16,5 @@ __all__ = [
     "RMSE",
     # Utils
     "benchmark_mapping",
+    "aggregate_benchmarking_metrics"
 ]

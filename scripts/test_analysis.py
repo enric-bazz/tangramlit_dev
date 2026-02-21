@@ -1,5 +1,5 @@
 """
-Test script to verify functionality and output of utilities in tangramlit.analysis module.
+Test script for tangramlit mapping and analysis public API.
 """
 
 import yaml

@@ -13,7 +13,7 @@ from tangramlit.data.spatial_binning import bfs_bin_growth, fps_seeds, compute_b
 
 
 def main():
-    adata_st = sc.read("C:/Users/enric/desktop/tangram_repo_dump/myDataCropped/slice200_norm_reduced.h5ad")
+    adata_st = sc.read("C:/Users/enric/tangramlit_dev/data/test_slice200.h5ad")
     print(adata_st)
 
     sq.gr.spatial_neighbors(adata_st, set_diag=False, key_added="spatial")

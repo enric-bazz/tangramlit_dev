@@ -133,6 +133,7 @@ def run(args):
         adata_st=adata_st,
         train_genes_names=train_genes,
         val_genes_names=val_genes,
+        device=args.device,
         **config
     )
 

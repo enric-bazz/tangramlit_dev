@@ -181,6 +181,7 @@ def map_cells_to_space(
         learning_rate=0.1,
         num_epochs=1000,
         random_state=None,
+        device=None,
         lambda_d=0,
         lambda_g1=1,
         lambda_g2=0,
@@ -197,7 +198,7 @@ def map_cells_to_space(
         lambda_geary=0,
         lambda_ct_islands=0,
         cluster_label=None,
-        experiment_name="",
+        experiment_name="tangram_mapping",
 ):
     """
     Map single cell data (`adata_sc`) on spatial data (`adata_st`).
@@ -212,6 +213,7 @@ def map_cells_to_space(
         learning_rate (float): Optional. Learning rate for the optimizer. Default is 0.1.
         num_epochs (int): Optional. Number of epochs. Default is 1000.
         random_state (int): Optional. pass an int to reproduce training. Default is None.
+        device (str): Optional. Pass a specific device to execute lightning. Currently supports 'cpu' or 'gpu'. Default is None and fallbacks to automatic detection.
         lambda_d (float): Optional. Hyperparameter for the density term of the optimizer. Default is 0.
         lambda_g1 (float): Optional. Hyperparameter for the gene-voxel similarity term of the optimizer. Default is 1.
         lambda_g2 (float): Optional. Hyperparameter for the voxel-gene similarity term of the optimizer. Default is 0.
@@ -228,6 +230,7 @@ def map_cells_to_space(
         lambda_moran (float): Optional. Strength of Moran's I preservation. Default is 0.
         lambda_ct_islands (float): Optional. Strength of ct islands enforcement. Default is 0. 
         cluster_label (str): Optional. Field in `adata_sc.obs` used for aggregating single cell data. Only valid for lambda_ct-islands > 0. Default is None.
+        experient_name (str): Optional. Name of mapping experiment.
 
     Returns:
         A cell-by-spot AnnData containing the probability of mapping cell i on spot j.
@@ -284,6 +287,12 @@ def map_cells_to_space(
     # Create TB logger for training
     train_logger = TensorBoardLogger(save_dir="tb_logs", name=f"train_{experiment_name}")
 
+    # Set device upon availability
+    if (device == 'gpu' or device is None) and torch.cuda.is_available():
+        device = 'gpu'
+    else:
+        device = 'cpu'
+
     # Initialize trainer with automatic device detection
     trainer = Trainer(
         logger=train_logger,
@@ -294,9 +303,9 @@ def map_cells_to_space(
         enable_checkpointing=False,
         enable_progress_bar=True,
         check_val_every_n_epoch=1,  # validation loop after every N training epochs
-        accelerator="auto",  # Automatically detect GPU/CPU (cuda, mps, or cpu)
-        devices=1,  # Force single GPU usage (does not support torch.distributed)
-        precision="32-true",  # Use single precision (32-bit float) for stability, change to "16-mixed" for mixed precision on GPU
+        accelerator=device if device is not None else "auto",  # 'cpu', 'gpu', or auto-detect
+        devices=1,  # force single GPU usage (does not support torch.distributed)
+        precision="16-mixed" if device == 'gpu' else 32,  # Use single precision (32-bit float) for stability, change to "16-mixed" for mixed precision on GPU
     )
 
     # Train the model

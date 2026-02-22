@@ -12,7 +12,16 @@ myvenv
 .venv/
 myvenv/
 
+<<<<<<< HEAD
 # VScode config
+=======
+# Data folder
+data/
+!src/tangramlit/data/
+out/
+
+# VScode cofing
+>>>>>>> refactor
 .vscode
 .vscode/
 
@@ -23,10 +32,15 @@ optuna_tests/
 ablation_study/
 addition_study/
 
+<<<<<<< HEAD
 # TensorBoard logs, Lightning logs, checkpoints, etc.
 tb_logs/
 lightning_logs/
+=======
+# Lightning checkpoints and logs
+>>>>>>> refactor
 checkpoints/
+lightning_logs/
 
 # Slurm jobs output
 slurm_jobs/

@@ -1,6 +1,7 @@
 """
 Mapping functions for Tangram using the Lightning framework.
 """
+<<<<<<< HEAD:tangramlit/mapping_utils.py
 import pandas as pd
 import sklearn
 import warnings
@@ -16,6 +17,21 @@ from . import utils as ut
 import tangramlit.validation_metrics as vm
 from .mapping_datamodule import *
 from .mapping_lightningmodule import *
+=======
+import logging
+import numpy as np
+import scanpy as sc
+import torch
+import warnings
+from anndata import AnnData
+from lightning.pytorch import Trainer
+from lightning.pytorch.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
+from lightning.pytorch.loggers import TensorBoardLogger
+
+
+from ..data.paired_data_module import PairedDataModule
+from .lit_mapper import MapperLightning, EpochProgressBar
+>>>>>>> refactor:src/tangramlit/mapping/trainer.py
 
 
 def validate_mapping_inputs(
@@ -183,6 +199,7 @@ def map_cells_to_space(
         learning_rate=0.1,
         num_epochs=1000,
         random_state=None,
+        device=None,
         lambda_d=0,
         lambda_g1=1,
         lambda_g2=0,
@@ -199,7 +216,11 @@ def map_cells_to_space(
         lambda_geary=0,
         lambda_ct_islands=0,
         cluster_label=None,
+<<<<<<< HEAD:tangramlit/mapping_utils.py
         experiment_name="",
+=======
+        experiment_name="tangram_mapping",
+>>>>>>> refactor:src/tangramlit/mapping/trainer.py
 ):
     """
     Map single cell data (`adata_sc`) on spatial data (`adata_st`).
@@ -214,6 +235,7 @@ def map_cells_to_space(
         learning_rate (float): Optional. Learning rate for the optimizer. Default is 0.1.
         num_epochs (int): Optional. Number of epochs. Default is 1000.
         random_state (int): Optional. pass an int to reproduce training. Default is None.
+        device (str): Optional. Pass a specific device to execute lightning. Currently supports 'cpu' or 'gpu'. Default is None and fallbacks to automatic detection.
         lambda_d (float): Optional. Hyperparameter for the density term of the optimizer. Default is 0.
         lambda_g1 (float): Optional. Hyperparameter for the gene-voxel similarity term of the optimizer. Default is 1.
         lambda_g2 (float): Optional. Hyperparameter for the voxel-gene similarity term of the optimizer. Default is 0.
@@ -230,6 +252,7 @@ def map_cells_to_space(
         lambda_moran (float): Optional. Strength of Moran's I preservation. Default is 0.
         lambda_ct_islands (float): Optional. Strength of ct islands enforcement. Default is 0. 
         cluster_label (str): Optional. Field in `adata_sc.obs` used for aggregating single cell data. Only valid for lambda_ct-islands > 0. Default is None.
+        experient_name (str): Optional. Name of mapping experiment.
 
     Returns:
         A cell-by-spot AnnData containing the probability of mapping cell i on spot j.
@@ -247,7 +270,7 @@ def map_cells_to_space(
     model = MapperLightning(**hyperparameters)
 
     # Initialize DataModule
-    data = MyDataModule(adata_sc=adata_sc,
+    data = PairedDataModule(adata_sc=adata_sc,
                         adata_st=adata_st,
                         input_genes=input_genes,
                         train_genes_names=train_genes_names,
@@ -282,12 +305,27 @@ def map_cells_to_space(
 
     # Set lr monitor
     lr_monitor = LearningRateMonitor(logging_interval='epoch')
+<<<<<<< HEAD:tangramlit/mapping_utils.py
 
     # Create TB logger for training
     train_logger = TensorBoardLogger(save_dir="tb_logs", name=f"train_{experiment_name}")
 
     # Initialize trainer
     trainer = lp.Trainer(
+=======
+
+    # Create TB logger for training
+    train_logger = TensorBoardLogger(save_dir="tb_logs", name=f"train_{experiment_name}")
+
+    # Set device upon availability
+    if (device == 'gpu' or device is None) and torch.cuda.is_available():
+        device = 'gpu'
+    else:
+        device = 'cpu'
+
+    # Initialize trainer with automatic device detection
+    trainer = Trainer(
+>>>>>>> refactor:src/tangramlit/mapping/trainer.py
         logger=train_logger,
         callbacks=[EpochProgressBar(), lr_monitor, early_stop],
         min_epochs=200,  # 200
@@ -296,6 +334,12 @@ def map_cells_to_space(
         enable_checkpointing=False,
         enable_progress_bar=True,
         check_val_every_n_epoch=1,  # validation loop after every N training epochs
+<<<<<<< HEAD:tangramlit/mapping_utils.py
+=======
+        accelerator=device if device is not None else "auto",  # 'cpu', 'gpu', or auto-detect
+        devices=1,  # force single GPU usage (does not support torch.distributed)
+        precision="16-mixed" if device == 'gpu' else 32,  # Use single precision (32-bit float) for stability, change to "16-mixed" for mixed precision on GPU
+>>>>>>> refactor:src/tangramlit/mapping/trainer.py
     )
 
     # Train the model
@@ -364,6 +408,7 @@ def map_cells_to_space(
     return adata_map, model, data
 
 
+<<<<<<< HEAD:tangramlit/mapping_utils.py
 def validate_mapping_experiment(model, datamodule, experiment_name=None):
     """
     Validate mapping experiment. The model must be already trained --> Run only after map_cells_to_space().
@@ -621,3 +666,124 @@ def benchmark_mapping(adata_ge, datamodule):
     df_g = df_g.sort_values(by="score", ascending=False)
 
     return df_g
+=======
+def run_multiple_mappings(
+    adata_sc,
+    adata_st,
+    config,
+    n_runs=10,
+    compute_mapping_cube=True,
+    compute_filtered_cube=False,
+    compute_filter_square=False,
+    ):
+    """
+    Runs multiple mappings using the same configuration and returns the final alignments cube.
+    If in filter mode the final filters matrix is also returned.
+    Args are added to control what tensors are stored for each run: storing n_runs mapping matrices might be memory-intensive.
+
+    Args:
+        adata_sc (AnnData): single cell data
+        adata_st (AnnData): spatial data
+        config (dict): Dictionary containing configuration parameters for the mapping.
+            Object must match keys in map_cell_sto_space() hyperparameters dictionary.
+        n_runs (int): Number of runs to perform. Default is 10.
+        compute_mapping_cube (bool): Whether to compute the final mapping cube. Default is True.
+        compute_filtered_cube (bool): Whether to compute the final filtered cube. Default is False.
+        compute_filter_square (bool): Whether to compute the final filter square. Default is False.
+
+    Returns:
+        Specified arrays stacked into a 2nd or 3rd dimension.
+    """
+    # Checks
+    if (compute_filtered_cube or compute_filter_square) and config['mode'] != 'filter':
+        raise ValueError("compute_filtered_cube and compute_filter_square can only be used in filter mode.")
+
+    # Call the data module to retrieve batch size
+    datamodule = PairedDataModule(adata_sc=adata_sc,
+                        adata_st=adata_st,
+                        #input_genes=input_genes,
+                        #refined_mode=mode == "refined",
+                        #train_genes_names=train_genes_names,
+                        #val_genes_names=val_genes_names,
+                        )
+
+    # Last arg is mandatory otherwise the validation_step() method is called with no val_dataset
+    print("\nEntering multiple runs training:")
+
+    # Store dimensions
+    n_cells = adata_sc.n_obs
+    n_spots = adata_st.n_obs
+
+    # Init mapping cube to final size (accessible) to pre-allocate memory
+    if compute_mapping_cube:
+        print(f"Allocating mapping cube of size = {n_cells * n_spots * n_runs * 8 / (1024 ** 2):.2f} MiB ...")
+        mapping_matrices_cube = np.zeros((n_cells, n_spots, n_runs))
+        print(f"Done")
+
+    # Init filtered mapping cube to final size (accessible) to pre-allocate memory
+    if compute_filtered_cube:
+        print(f"Allocating filtered mapping cube of size = {n_cells * n_spots * n_runs * 8 / (1024 ** 2):.2f} MiB ...")
+        filtered_matrices_cube = np.zeros((n_cells, n_spots, n_runs))
+        print(f"Done")
+
+    # Init filters matrix to final size
+    if compute_filter_square:
+        print(f"Allocating filters square of size =  {n_cells * n_runs * 8 / (1024**2):.2f} MiB ...")
+        filters_square = np.zeros((datamodule.adata_sc.n_obs, n_runs))
+        print(f"Done")
+
+    for run in range(n_runs):
+        print(f"\nRun {run+1}/{n_runs}...")
+        # Set run RNG seed (optional)
+        config['random_state'] = run
+        #config['random_state'] = config['random_state'] + run if 'random_state' in config else [run,]
+
+        # Initialize trainer here (otherwise after 1 run max_epochs is reached already)
+        trainer = Trainer(
+            max_epochs=config['num_epochs'],
+            logger=False,
+            enable_checkpointing=False,
+            enable_progress_bar=False,
+            limit_val_batches=0,  # disables validation during fit
+            accelerator="auto",  # Automatically detect GPU/CPU
+            devices="auto",  # Automatically detect number of devices
+            precision="32-true",  # Single precision for stability
+        )
+
+        # Initialize the model
+        model = MapperLightning(**config)
+
+        # Train the model
+        trainer.fit(model, datamodule=datamodule)
+
+        # Get the final mapping matrix
+        with torch.no_grad():
+            if model.hparams.filter:
+                mapping, filtered_mapping, filter_probs = model()  # Unpack values (skip filtered M matrix)
+                final_mapping = mapping.cpu().numpy()
+                final_filtered_mapping = filtered_mapping.cpu().numpy()
+                final_filter = filter_probs.cpu().numpy()
+            else:
+                final_mapping = model().cpu().numpy()
+
+        # Store mapping to cube
+        if compute_mapping_cube:
+            mapping_matrices_cube[:,:,run] = final_mapping
+        if compute_filtered_cube:
+            filtered_matrices_cube[:,:,run] = final_filtered_mapping
+
+        # Store filter to square
+        if compute_filter_square:
+            filters_square[:,run] = final_filter
+
+    # Prepare results
+    result = []
+    if compute_mapping_cube:
+        result.append(mapping_matrices_cube)
+    if compute_filtered_cube:
+        result.append(filtered_matrices_cube)
+    if compute_filter_square:
+        result.append(filters_square)
+
+    return result
+>>>>>>> refactor:src/tangramlit/mapping/trainer.py

@@ -37,7 +37,7 @@ Accordingly:
 * `rna_count_based` priors are not supported
 * Custom density priors are not yet implemented
 
-### Command-Line Interface (CLI)
+## Command-Line Interface (CLI)
 
 The `tangramlit` package provides a CLI to run common workflows without writing Python code. After installing the package, you can use the following commands:
 
@@ -59,7 +59,7 @@ Further detais and examples with:
 tangramlit --help
 ```
 
-### Public API
+## Public API
 
 In addition to the CLI, `tangramlit` exposes a Python API for interactive use in scripts or notebooks. It is largely consistent with the original Tangram API, with extensions for:
 

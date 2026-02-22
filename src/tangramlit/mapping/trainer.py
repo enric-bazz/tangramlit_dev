@@ -288,10 +288,10 @@ def map_cells_to_space(
     train_logger = TensorBoardLogger(save_dir="tb_logs", name=f"train_{experiment_name}")
 
     # Set device upon availability
-    if (device == 'gpu' or device is None) and torch.cuda.is_available():
-        device = 'gpu'
-    else:
-        device = 'cpu'
+    # if (device == 'gpu' or device is None) and torch.cuda.is_available():
+    #     device = 'gpu'
+    # else:
+    #     device = 'cpu'
 
     # Initialize trainer with automatic device detection
     trainer = Trainer(

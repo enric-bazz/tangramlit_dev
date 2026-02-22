@@ -295,7 +295,7 @@ def map_cells_to_space(
         enable_progress_bar=True,
         check_val_every_n_epoch=1,  # validation loop after every N training epochs
         accelerator="auto",  # Automatically detect GPU/CPU (cuda, mps, or cpu)
-        devices="auto",  # Automatically detect number of GPUs
+        devices=1,  # Force single GPU usage (does not support torch.distributed)
         precision="32-true",  # Use single precision (32-bit float) for stability, change to "16-mixed" for mixed precision on GPU
     )
 

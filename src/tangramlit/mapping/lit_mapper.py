@@ -135,12 +135,15 @@ class MapperLightning(LightningModule):
             # Get a train batch from the datamodule to determine dimensions
             dataloader_train = self.trainer.datamodule.train_dataloader()
             batch = next(iter(dataloader_train))
-            S, G = batch['S'], batch['G']
+            device = self._device  # LightningModule device (cuda or cpu)
+            S = batch['S'].to(device)
+            G = batch['G'].to(device)
             n_cells, n_genes_sc = S.shape
             n_spots, n_genes_st = G.shape
 
             # Get spatial graph from batch
-            graph_conn, graph_dist = batch['spatial_graph_conn'], batch['spatial_graph_dist']
+            graph_conn = batch['spatial_graph_conn'].to(device)
+            graph_dist = batch['spatial_graph_dist'].to(device)
 
             # Get single cell annotation OHE and register buffer (no state dict)
             if self.hparams.lambda_ct_islands > 0:
@@ -206,18 +209,16 @@ class MapperLightning(LightningModule):
             with diagonal entries based on the value of self_inclusion.
 
         """
+        device = connectivities.device if isinstance(connectivities, torch.Tensor) else torch.device('cpu')
         if standardized:
-            # Row-normalize distances
-            distances_norm = torch.from_numpy(
-                sklearn.preprocessing.normalize(distances, norm="l1", axis=1, copy=False).astype("float32")
-                )
+            # l1 normalization (works only with non-negative entries, such as distances)
+            distances_norm = distances / distances.sum(dim=1, keepdim=True)
             # Mask normalized distances with connectivity (keep only neighbor links)
             spatial_weights = connectivities.multiply(distances_norm)
         else:
             spatial_weights = connectivities
-        if self_inclusion:
-            spatial_weights += np.eye(spatial_weights.shape[0], dtype=np.float32)
-
+        if self_inclusion:  
+            spatial_weights += torch.eye(spatial_weights.shape[0], dtype=torch.float32, device=device)
         return spatial_weights
     
 
@@ -234,6 +235,11 @@ class MapperLightning(LightningModule):
         Returns:
             A tuple containing local indicators, each a torch.tensor with shape (n_genes, n_spots).
         """
+        # Ensure correct device
+        device = G.device
+        self.spatial_weights_getisord = self.spatial_weights_getisord.to(device)
+        self.spatial_weights_morangeary = self.spatial_weights_morangeary.to(device)
+
         # Getis Ord G*
         getis_ord_G_star = None
         if self.hparams.lambda_getis_ord > 0:
@@ -518,9 +524,16 @@ def poly2_auc(gv_scores, gene_sparsity, pol_deg=2, plot_auc=False):
         plot: polyfit curve and genes (sparsity, score) scatter plot
     """
 
-    # Convert to numpy arrays
-    xs = np.array(gv_scores).flatten()
-    ys = np.array(gene_sparsity).flatten()
+    # Convert to numpy arrays safely
+    if isinstance(gv_scores, torch.Tensor):
+        xs = gv_scores.detach().cpu().numpy().flatten()
+    else:
+        xs = np.array(gv_scores).flatten()
+
+    if isinstance(gene_sparsity, torch.Tensor):
+        ys = gene_sparsity.detach().cpu().numpy().flatten()
+    else:
+        ys = np.array(gene_sparsity).flatten()
 
     # Fit polynomial
     pol_cs = np.polyfit(xs, ys, pol_deg)

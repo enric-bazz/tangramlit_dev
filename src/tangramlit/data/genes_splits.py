@@ -42,6 +42,7 @@ def split_train_val_test_genes(
         raise ValueError("No shared genes between adata_sc and adata_st")
 
     genes = np.array([sc_genes[k] for k in shared_keys])
+    genes = np.char.lower(genes)
 
     n_total = len(genes)
     n_train = int(n_total * train_ratio)

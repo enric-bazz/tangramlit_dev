@@ -10,22 +10,15 @@ wheels/
 .venv/
 myvenv/
 
+# VScode
+.vscode/
+
 # Data folder
 data/
 !src/tangramlit/data/
 out/
 
-# VScode cofing
-.vscode/
-
-# Data and results
-data/
-results/
-optuna_tests/
-ablation_study/
-addition_study/
-
-# TensorBoard logs, Lightning logs, checkpoints, etc.
+# Pytorch, Lightning, TB
 tb_logs/
 lightning_logs/
 checkpoints/
@@ -35,14 +28,5 @@ checkpoints/
 .cache/
 cache/
 
-# Jupyter Notebook checkpoints
+# Jupyter
 .ipynb_checkpoints/
-
-# Data filetypes
-*.csv
-*.tsv
-*.xlsx
-*.h5ad
-*.h5
-*.gz
-*.png

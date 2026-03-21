@@ -68,17 +68,21 @@ def validate_mapping_inputs(
         raise ValueError("Both adata_sc and adata_st must be AnnData objects.")
 
     # Extract common genes names
+    warnings.warn("All gene names are converted to lower case for alignment.")
     sc_genes = set(adata_sc.var_names.str.lower())
     st_genes = set(adata_st.var_names.str.lower())
     common_genes = sc_genes.intersection(st_genes)
     
     # Check that input_genes is a subset of overlapping genes
     if input_genes is not None:
+        input_genes = [g.lower() for g in input_genes]
         if not set(input_genes).issubset(common_genes):
             raise ValueError("input_genes must be a subset of the common genes set.")
 
     # Check that train_genes_names and val_genes_names are valid and do not intersect
     if train_genes_names is not None and val_genes_names is not None:
+        train_genes_names = [g.lower() for g in train_genes_names]
+        val_genes_names = [g.lower() for g in val_genes_names]
         if not (set(train_genes_names) <= common_genes and set(val_genes_names) <= common_genes):
             raise ValueError("train_genes_names and val_genes_names must be valid indices.")
         elif set(train_genes_names).intersection(set(val_genes_names)):

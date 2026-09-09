@@ -87,7 +87,7 @@ class TangramLoss:
             gv_neighborhood_term = 0.0
 
         # LISA terms
-        getis_ord_term, moran_term, gearys_term = None, None, None
+        getis_ord_term, moran_term, gearys_term = 0.0, 0.0, 0.0
         if self.hparams.lambda_getis_ord > 0:
             getis_ord_term = self.hparams.lambda_getis_ord * cosine_similarity(getis_ord_G_star_ref,
                                                                         getis_ord_G_star_pred, dim=0).mean()

@@ -186,6 +186,8 @@ class MapperLightning(LightningModule):
                     self.register_buffer(name, tensor, persistent=False)
                     size_mib = tensor.element_size() * tensor.nelement() / (1024 ** 2)
                     #print(f"Registered buffer '{name}' | shape={tuple(tensor.shape)} | size={size_mib:.2f} MiB")
+                else:
+                    self.register_buffer(name, None)
 
             # LISA on ground truth (reference values)
             self.getis_ord_G_star_ref, self.moran_I_ref, self.gearys_C_ref = self._spatial_local_indicators(G)
@@ -237,25 +239,25 @@ class MapperLightning(LightningModule):
         """
         # Ensure correct device
         device = G.device
-        self.spatial_weights_getisord = self.spatial_weights_getisord.to(device)
-        self.spatial_weights_morangeary = self.spatial_weights_morangeary.to(device)
+        spatial_weights_getisord = self.spatial_weights_getisord.to(device) if self.spatial_weights_getisord is not None else None
+        spatial_weights_morangeary = self.spatial_weights_morangeary.to(device) if self.spatial_weights_morangeary is not None else None
 
         # Getis Ord G*
         getis_ord_G_star = None
         if self.hparams.lambda_getis_ord > 0:
-            getis_ord_G_star = (self.spatial_weights_getisord @ G) / G.sum(dim=0)
+            getis_ord_G_star = (spatial_weights_getisord @ G) / G.sum(dim=0)
 
         # Moran's I
         moran_I = None
         if self.hparams.lambda_moran > 0:
             z = G - G.mean(dim=0)
-            moran_I = (G.shape[0] * z * (self.spatial_weights_morangeary @ z)) / torch.sum(z * z, dim=0)
+            moran_I = (G.shape[0] * z * (spatial_weights_morangeary @ z)) / torch.sum(z * z, dim=0)
 
         # Geary's C
         gearys_C = None
         if self.hparams.lambda_geary > 0:
             n_spots = G.shape[0]
-            W = self.spatial_weights_morangeary  # (n_spots, n_spots), dense manageable
+            W = spatial_weights_morangeary  # (n_spots, n_spots), dense manageable
             m2 = torch.sum((G - G.mean(dim=0)) ** 2, dim=0) / (n_spots - 1)
             WG = W @ G                            # (n_spots, n_genes)
             term1 = (W.sum(dim=1, keepdim=True) * (G ** 2)).sum(dim=0)  # sum_i w_i. * G_i^2
@@ -306,6 +308,8 @@ class MapperLightning(LightningModule):
 
         if (self.hparams.lambda_getis_ord + self.hparams.lambda_moran + self.hparams.lambda_geary > 0):
             getis_ord_G_star_pred, moran_I_pred, gearys_C_pred = self._spatial_local_indicators(G_pred)
+        else:
+            getis_ord_G_star_pred, moran_I_pred, gearys_C_pred = 0.0, 0.0, 0.0
 
         loss_dict = self.loss_fn(
             G=G_train,
